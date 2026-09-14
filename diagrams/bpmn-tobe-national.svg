@@ -1,0 +1,152 @@
+<svg viewBox="0 0 1500 760" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="9" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#0f3057"/>
+    </marker>
+  </defs>
+  <rect width="1500" height="760" fill="#f7f9fb"/>
+  <text x="750" y="34" text-anchor="middle" font-size="22" font-weight="700" fill="#0f3057">TO-BE Process — Multi-Campus Emergency Mustering (COTEMS-National)</text>
+
+  <!-- Lane labels -->
+  <g font-size="12.5" font-weight="700" fill="#ffffff">
+    <rect x="0" y="60" width="150" height="110" fill="#0f3057"/>
+    <text x="75" y="100" text-anchor="middle">STUDENT /</text>
+    <text x="75" y="116" text-anchor="middle">STAFF</text>
+
+    <rect x="0" y="170" width="150" height="110" fill="#0e7c7b"/>
+    <text x="75" y="215" text-anchor="middle">COTEMS</text>
+    <text x="75" y="231" text-anchor="middle">SYSTEM</text>
+
+    <rect x="0" y="280" width="150" height="110" fill="#c1440e"/>
+    <text x="75" y="325" text-anchor="middle">CAMPUS</text>
+    <text x="75" y="341" text-anchor="middle">WARDEN</text>
+
+    <rect x="0" y="390" width="150" height="110" fill="#1c6e8c"/>
+    <text x="75" y="435" text-anchor="middle">CAMPUS</text>
+    <text x="75" y="451" text-anchor="middle">SECURITY</text>
+
+    <rect x="0" y="500" width="150" height="110" fill="#5b6b7a"/>
+    <text x="75" y="545" text-anchor="middle">NATIONAL OHS</text>
+    <text x="75" y="561" text-anchor="middle">COMMAND (HQ)</text>
+  </g>
+
+  <!-- Lane rows background -->
+  <rect x="150" y="60" width="1340" height="110" fill="#ffffff" stroke="#e3e8ec"/>
+  <rect x="150" y="170" width="1340" height="110" fill="#f0f6f5" stroke="#e3e8ec"/>
+  <rect x="150" y="280" width="1340" height="110" fill="#ffffff" stroke="#e3e8ec"/>
+  <rect x="150" y="390" width="1340" height="110" fill="#f0f4f7" stroke="#e3e8ec"/>
+  <rect x="150" y="500" width="1340" height="110" fill="#ffffff" stroke="#e3e8ec"/>
+
+  <!-- Student lane -->
+  <circle cx="200" cy="115" r="20" fill="#0f3057"/>
+  <text x="200" y="120" text-anchor="middle" font-size="10" fill="#fff">Start</text>
+  <text x="200" y="145" text-anchor="middle" font-size="10.5" fill="#333">Enters campus</text>
+
+  <rect x="260" y="90" width="150" height="50" rx="8" fill="#dfe9f2" stroke="#0f3057"/>
+  <text x="335" y="112" text-anchor="middle" font-size="11" fill="#0f3057">Scans ID QR at</text>
+  <text x="335" y="126" text-anchor="middle" font-size="11" fill="#0f3057">building entrance</text>
+
+  <rect x="1020" y="90" width="160" height="50" rx="8" fill="#dfe9f2" stroke="#0f3057"/>
+  <text x="1100" y="112" text-anchor="middle" font-size="11" fill="#0f3057">Proceeds to assigned</text>
+  <text x="1100" y="126" text-anchor="middle" font-size="11" fill="#0f3057">muster point</text>
+
+  <rect x="1220" y="90" width="150" height="50" rx="8" fill="#dfe9f2" stroke="#0f3057"/>
+  <text x="1295" y="112" text-anchor="middle" font-size="11" fill="#0f3057">Confirms presence</text>
+  <text x="1295" y="126" text-anchor="middle" font-size="11" fill="#0f3057">to warden</text>
+
+  <!-- System lane -->
+  <rect x="260" y="200" width="150" height="50" rx="8" fill="#d3ece9" stroke="#0e7c7b"/>
+  <text x="335" y="222" text-anchor="middle" font-size="11" fill="#0e7c7b">Logs check-in with</text>
+  <text x="335" y="236" text-anchor="middle" font-size="11" fill="#0e7c7b">campus/building/room</text>
+
+  <rect x="460" y="200" width="160" height="50" rx="8" fill="#d3ece9" stroke="#0e7c7b"/>
+  <text x="540" y="222" text-anchor="middle" font-size="11" fill="#0e7c7b">Updates live occupancy</text>
+  <text x="540" y="236" text-anchor="middle" font-size="11" fill="#0e7c7b">per building &amp; campus</text>
+
+  <polygon points="700,190 760,225 700,260 640,225" fill="#fef3ea" stroke="#c1440e" stroke-width="1.5"/>
+  <text x="700" y="220" text-anchor="middle" font-size="10" fill="#c1440e">Emergency</text>
+  <text x="700" y="232" text-anchor="middle" font-size="10" fill="#c1440e">declared?</text>
+
+  <rect x="820" y="200" width="170" height="50" rx="8" fill="#d3ece9" stroke="#0e7c7b"/>
+  <text x="905" y="218" text-anchor="middle" font-size="11" fill="#0e7c7b">Freezes last-known</text>
+  <text x="905" y="232" text-anchor="middle" font-size="11" fill="#0e7c7b">occupants as muster roll</text>
+  <text x="905" y="245" text-anchor="middle" font-size="9" fill="#0e7c7b">(per affected campus)</text>
+
+  <rect x="1220" y="200" width="150" height="50" rx="8" fill="#d3ece9" stroke="#0e7c7b"/>
+  <text x="1295" y="218" text-anchor="middle" font-size="11" fill="#0e7c7b">Marks person</text>
+  <text x="1295" y="232" text-anchor="middle" font-size="11" fill="#0e7c7b">accounted-for live</text>
+
+  <!-- Warden lane -->
+  <rect x="820" y="310" width="170" height="50" rx="8" fill="#fbe0d3" stroke="#c1440e"/>
+  <text x="905" y="328" text-anchor="middle" font-size="11" fill="#c1440e">Declares emergency</text>
+  <text x="905" y="342" text-anchor="middle" font-size="11" fill="#c1440e">(fire / drill / other) in app</text>
+
+  <rect x="1020" y="310" width="160" height="50" rx="8" fill="#fbe0d3" stroke="#c1440e"/>
+  <text x="1100" y="328" text-anchor="middle" font-size="11" fill="#c1440e">Directs assembly at</text>
+  <text x="1100" y="342" text-anchor="middle" font-size="11" fill="#c1440e">muster point(s)</text>
+
+  <rect x="1220" y="310" width="150" height="50" rx="8" fill="#fbe0d3" stroke="#c1440e"/>
+  <text x="1295" y="328" text-anchor="middle" font-size="11" fill="#c1440e">Reviews live roll,</text>
+  <text x="1295" y="342" text-anchor="middle" font-size="11" fill="#c1440e">flags unaccounted</text>
+
+  <rect x="1400" y="310" width="80" height="50" rx="8" fill="#fbe0d3" stroke="#c1440e"/>
+  <text x="1440" y="328" text-anchor="middle" font-size="10.5" fill="#c1440e">Declares</text>
+  <text x="1440" y="342" text-anchor="middle" font-size="10.5" fill="#c1440e">all-clear</text>
+
+  <!-- Security lane -->
+  <rect x="1220" y="420" width="150" height="50" rx="8" fill="#dbe9ef" stroke="#1c6e8c"/>
+  <text x="1295" y="438" text-anchor="middle" font-size="11" fill="#1c6e8c">Physically checks</text>
+  <text x="1295" y="452" text-anchor="middle" font-size="11" fill="#1c6e8c">unaccounted locations</text>
+
+  <rect x="1400" y="420" width="80" height="50" rx="8" fill="#dbe9ef" stroke="#1c6e8c"/>
+  <text x="1440" y="438" text-anchor="middle" font-size="10.5" fill="#1c6e8c">Reports</text>
+  <text x="1440" y="452" text-anchor="middle" font-size="10.5" fill="#1c6e8c">to warden</text>
+
+  <!-- National OHS lane -->
+  <rect x="820" y="530" width="220" height="50" rx="8" fill="#e6e9ec" stroke="#5b6b7a"/>
+  <text x="930" y="548" text-anchor="middle" font-size="11" fill="#5b6b7a">Receives real-time alert;</text>
+  <text x="930" y="562" text-anchor="middle" font-size="11" fill="#5b6b7a">views affected campus dashboard</text>
+
+  <rect x="1220" y="530" width="150" height="50" rx="8" fill="#e6e9ec" stroke="#5b6b7a"/>
+  <text x="1295" y="548" text-anchor="middle" font-size="11" fill="#5b6b7a">Coordinates multi-</text>
+  <text x="1295" y="562" text-anchor="middle" font-size="11" fill="#5b6b7a">campus response if needed</text>
+
+  <circle cx="1440" cy="555" r="20" fill="#5b6b7a"/>
+  <text x="1440" y="559" text-anchor="middle" font-size="10" fill="#fff">End</text>
+
+  <!-- Flows -->
+  <line x1="220" y1="115" x2="260" y2="115" stroke="#0f3057" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="335" y1="140" x2="335" y2="200" stroke="#0f3057" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="410" y1="225" x2="460" y2="225" stroke="#0f3057" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="620" y1="225" x2="640" y2="225" stroke="#0f3057" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="700" y1="260" x2="700" y2="335" stroke="#0f3057" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="712" y="300" font-size="10" fill="#c1440e">yes</text>
+  <line x1="700" y1="335" x2="820" y2="335" stroke="#0f3057" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="760" y1="225" x2="1500" y2="225" stroke="#8fa3b3" stroke-width="1.2" stroke-dasharray="3,3"/>
+  <text x="1420" y="218" font-size="9" fill="#8fa3b3">no → normal ops continue</text>
+
+  <line x1="905" y1="360" x2="905" y2="200" stroke="#0f3057" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="915" y="280" font-size="10" fill="#5b6b7a">triggers roll freeze</text>
+  <line x1="990" y1="225" x2="1020" y2="115" stroke="#0f3057" stroke-width="1.4" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+  <text x="1000" y="170" font-size="9" fill="#5b6b7a">broadcast push alert</text>
+
+  <line x1="990" y1="335" x2="1020" y2="335" stroke="#0f3057" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="1100" y1="140" x2="1100" y2="310" stroke="#0f3057" stroke-width="1.2" stroke-dasharray="4,3"/>
+  <line x1="1180" y1="335" x2="1220" y2="335" stroke="#0f3057" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <line x1="1295" y1="140" x2="1295" y2="200" stroke="#0f3057" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="1295" y1="360" x2="1295" y2="310" stroke="#0f3057" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="1370" y1="335" x2="1295" y2="250" stroke="#0f3057" stroke-width="1.2" stroke-dasharray="4,3"/>
+
+  <line x1="1295" y1="360" x2="1295" y2="420" stroke="#c1440e" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="1305" y="390" font-size="9" fill="#c1440e">if unaccounted &gt; 0</text>
+  <line x1="1370" y1="445" x2="1400" y2="445" stroke="#0f3057" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="1440" y1="420" x2="1440" y2="360" stroke="#0f3057" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <line x1="930" y1="335" x2="930" y2="530" stroke="#5b6b7a" stroke-width="1.4" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+  <line x1="1040" y1="555" x2="1220" y2="555" stroke="#5b6b7a" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="1370" y1="555" x2="1420" y2="555" stroke="#5b6b7a" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="1440" y1="360" x2="1440" y2="530" stroke="#0f3057" stroke-width="1.2" stroke-dasharray="4,3"/>
+
+  <text x="750" y="700" text-anchor="middle" font-size="11.5" fill="#5b6b7a">Compared with the AS-IS process, roll call time drops from a manual headcount (10–40+ min per building) to a live, continuously-updated roster — and any single campus, or all campuses, can be mustered from one national view.</text>
+</svg>

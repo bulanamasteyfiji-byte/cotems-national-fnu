@@ -1,0 +1,73 @@
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.7.1"
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+}
+
+serve(async (req) => {
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
+  }
+
+  try {
+    const supabaseClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+      { auth: { persistSession: false } }
+    )
+
+    const body = await req.json()
+    const { campusId, buildingId, roomId, username, password: providedPassword, registeredBy } = body
+
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'
+    let password = providedPassword || ''
+    if (!password) {
+      for (let i = 0; i < 8; i++) password += chars[Math.floor(Math.random() * chars.length)]
+    }
+
+    const email = `${username}@scanner.cotems.local`
+
+    const { data: authUser, error: authError } = await supabaseClient.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: { role: 'scanner', username, campusId }
+    })
+
+    if (authError) throw authError
+
+    const scannerId = 'SCN' + Math.floor(1000 + Math.random() * 9000)
+
+    const scannerRow = {
+      id: scannerId,
+      campus_id: campusId,
+      building_id: buildingId || null,
+      room_id: roomId || null,
+      username,
+      active: true,
+      registered_by: registeredBy || 'Admin',
+      registered_at: new Date().toISOString(),
+      auth_user_id: authUser.user.id
+    }
+
+    const { data: insertedScanner, error: dbError } = await supabaseClient
+      .from('scanners')
+      .insert(scannerRow)
+      .select()
+      .single()
+
+    if (dbError) throw dbError
+
+    return new Response(
+      JSON.stringify({ scanner: insertedScanner, password }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+    )
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ error: error.message }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+    )
+  }
+})
