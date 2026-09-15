@@ -7,3 +7,5 @@ Thumbs.db
 desktop.ini
 supabase/.temp/
 *.sql
+SECRETS_HANDOFF.md
+*HANDOFF*.md
