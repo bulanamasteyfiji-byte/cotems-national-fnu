@@ -199,20 +199,23 @@
 /* ============================= SUPABASE CLIENT ============================= */
 const SUPABASE_URL = "https://jqlxjolxnrbrhsysqojp.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_AsaHxnpfQSgyU94BDDUtRA_IMynCD1u";
-let supabase = null;
+/* NOTE: variable is named _sbClient (not "supabase") to avoid collision with
+   the window.supabase global exposed by the Supabase CDN UMD bundle */
+let _sbClient = null;
 try {
   if (window.supabase && typeof window.supabase.createClient === 'function') {
-    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    _sbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   }
 } catch(e) {
   console.warn("Supabase CDN client initialization deferred:", e);
 }
 function getSupabase(){
-  if (!supabase && window.supabase && typeof window.supabase.createClient === 'function') {
-    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  if (!_sbClient && window.supabase && typeof window.supabase.createClient === 'function') {
+    _sbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   }
-  return supabase;
+  return _sbClient;
 }
+
 
 /* Helper toast function */
 function showToast(msg, type='info'){
@@ -341,20 +344,23 @@ async function initSupabaseData(){
   } catch (err) {
     console.error("Failed to load Supabase data:", err);
     showToast("Error loading data from Supabase backend", "error");
+    render(); // always render — app works offline with in-memory demo data
   }
 }
 
 async function refreshOperationalData(){
+  const sb = getSupabase();
+  if (!sb) return;
   const [pRes, scRes, chRes, evRes, emRes, mrRes, alRes, dsRes, auRes] = await Promise.all([
-    supabase.from('people').select('*'),
-    supabase.from('scanners').select('*'),
-    supabase.from('checkins').select('*').is('out_time', null),
-    supabase.from('event_log').select('*').order('occurred_at', { ascending: false }).limit(500),
-    supabase.from('emergencies').select('*').eq('status', 'active'),
-    supabase.from('muster_roll').select('*'),
-    supabase.from('alerts').select('*').order('sent_at', { ascending: false }).limit(200),
-    supabase.from('distress_signals').select('*').order('sent_at', { ascending: false }).limit(100),
-    supabase.from('audit_log').select('*').order('occurred_at', { ascending: false }).limit(300)
+    sb.from('people').select('*'),
+    sb.from('scanners').select('*'),
+    sb.from('checkins').select('*').is('out_time', null),
+    sb.from('event_log').select('*').order('occurred_at', { ascending: false }).limit(500),
+    sb.from('emergencies').select('*').eq('status', 'active'),
+    sb.from('muster_roll').select('*'),
+    sb.from('alerts').select('*').order('sent_at', { ascending: false }).limit(200),
+    sb.from('distress_signals').select('*').order('sent_at', { ascending: false }).limit(100),
+    sb.from('audit_log').select('*').order('occurred_at', { ascending: false }).limit(300)
   ]);
 
   if (pRes.data) {
@@ -490,8 +496,9 @@ async function refreshOperationalData(){
 }
 
 function setupRealtimeSubscriptions(){
-  if(!supabase) return;
-  const channel = supabase.channel('cotems-realtime')
+  const sb = getSupabase();
+  if(!sb) return;
+  const channel = sb.channel('cotems-realtime')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'checkins' }, () => { refreshOperationalData().then(render); })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'emergencies' }, () => { refreshOperationalData().then(render); })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'muster_roll' }, () => { refreshOperationalData().then(render); })
@@ -801,7 +808,7 @@ async function editScanner(scannerId, fields){
         });
       } catch(e){}
     }
-    await supabase.from('scanners').update({
+    await getSupabase().from('scanners').update({
       active: s.active
     }).eq('id', scannerId);
   }
@@ -813,7 +820,7 @@ async function deleteScanner(scannerId){
   const idx = SCANNERS.findIndex(x=>x.id===scannerId);
   SCANNERS.splice(idx,1);
   if(supabase){
-    await supabase.from('scanners').delete().eq('id', scannerId);
+    await getSupabase().from('scanners').delete().eq('id', scannerId);
   }
   log(s.campusId,'Admin','Deleted scanner device: '+s.username);
   return true;
@@ -1019,9 +1026,9 @@ async function addCampus({name, division, address}){
   CAMPUSES.push(campusObj);
   
   if(supabase){
-    await supabase.from('campuses').insert({ id, name, division, address });
-    await supabase.from('muster_points').insert({ id: gateId, campus_id: id, name: 'Main Gate Muster Point', is_main_gate: true });
-    await supabase.from('campuses').update({ main_gate_muster_point_id: gateId }).eq('id', id);
+    await getSupabase().from('campuses').insert({ id, name, division, address });
+    await getSupabase().from('muster_points').insert({ id: gateId, campus_id: id, name: 'Main Gate Muster Point', is_main_gate: true });
+    await getSupabase().from('campuses').update({ main_gate_muster_point_id: gateId }).eq('id', id);
   }
 
   log(id,'Admin','Created new campus: '+name+' (with a default Main Gate muster point)');
@@ -1032,7 +1039,7 @@ async function editCampus(campusId, fields){
   const c = campusById(campusId);
   Object.assign(c, fields);
   if(supabase){
-    await supabase.from('campuses').update({
+    await getSupabase().from('campuses').update({
       name: fields.name,
       division: fields.division,
       address: fields.address
@@ -1049,7 +1056,7 @@ async function deleteCampus(campusId){
   const idx = CAMPUSES.findIndex(x=>x.id===campusId);
   CAMPUSES.splice(idx,1);
   if(supabase){
-    await supabase.from('campuses').delete().eq('id', campusId);
+    await getSupabase().from('campuses').delete().eq('id', campusId);
   }
   log('national','Admin','Deleted campus: '+c.name);
   return true;
@@ -1062,7 +1069,7 @@ async function addBuilding(campusId, {name, floors}){
   campus.buildings.push({ id, name, floors:Number(floors)||1, rooms:[], musterPointId: mpId });
   
   if(supabase){
-    await supabase.from('buildings').insert({
+    await getSupabase().from('buildings').insert({
       id,
       campus_id: campusId,
       name,
@@ -1079,7 +1086,7 @@ async function setBuildingMusterPoint(campusId, buildingId, musterPointId){
   const campus = campusById(campusId); const b = buildingById(campus,buildingId);
   b.musterPointId = musterPointId;
   if(supabase){
-    await supabase.from('buildings').update({ muster_point_id: musterPointId }).eq('id', buildingId);
+    await getSupabase().from('buildings').update({ muster_point_id: musterPointId }).eq('id', buildingId);
   }
   const mp = campus.musterPoints.find(x=>x.id===musterPointId);
   log(campusId,'Admin','Set mustering area for '+b.name+' to: '+(mp?mp.name:'none'));
@@ -1089,7 +1096,7 @@ async function editBuilding(campusId, buildingId, fields){
   const campus = campusById(campusId); const b = buildingById(campus,buildingId);
   Object.assign(b, fields);
   if(supabase){
-    await supabase.from('buildings').update({
+    await getSupabase().from('buildings').update({
       name: fields.name,
       floors: fields.floors
     }).eq('id', buildingId);
@@ -1102,7 +1109,7 @@ async function deleteBuilding(campusId, buildingId){
   if(currentOccupants(campusId,buildingId).length>0){ alert('Cannot delete '+b.name+' — people are currently checked in there.'); return false; }
   campus.buildings = campus.buildings.filter(x=>x.id!==buildingId);
   if(supabase){
-    await supabase.from('buildings').delete().eq('id', buildingId);
+    await getSupabase().from('buildings').delete().eq('id', buildingId);
   }
   log(campusId,'Admin','Deleted building: '+b.name);
   return true;
@@ -1115,7 +1122,7 @@ async function addRoom(campusId, buildingId, {name, capacity}){
   b.rooms.push({ id, name, capacity: cap });
   
   if(supabase){
-    await supabase.from('rooms').insert({
+    await getSupabase().from('rooms').insert({
       id,
       building_id: buildingId,
       name,
@@ -1132,7 +1139,7 @@ async function editRoom(campusId, buildingId, roomId, fields){
   const r = b.rooms.find(x=>x.id===roomId);
   Object.assign(r, fields);
   if(supabase){
-    await supabase.from('rooms').update({
+    await getSupabase().from('rooms').update({
       name: fields.name,
       capacity: fields.capacity
     }).eq('id', roomId);
@@ -1147,7 +1154,7 @@ async function deleteRoom(campusId, buildingId, roomId){
   if(occupied){ alert('Cannot delete '+r.name+' — people are currently checked in there.'); return false; }
   b.rooms = b.rooms.filter(x=>x.id!==roomId);
   if(supabase){
-    await supabase.from('rooms').delete().eq('id', roomId);
+    await getSupabase().from('rooms').delete().eq('id', roomId);
   }
   log(campusId,'Admin','Deleted room: '+r.name);
   return true;
@@ -1159,7 +1166,7 @@ async function addMusterPoint(campusId, {name}){
   campus.musterPoints.push({ id, name, isMainGate: false });
   
   if(supabase){
-    await supabase.from('muster_points').insert({
+    await getSupabase().from('muster_points').insert({
       id,
       campus_id: campusId,
       name,
@@ -1176,7 +1183,7 @@ async function editMusterPoint(campusId, mpId, fields){
   const mp = campus.musterPoints.find(x=>x.id===mpId);
   Object.assign(mp, fields);
   if(supabase){
-    await supabase.from('muster_points').update({ name: fields.name }).eq('id', mpId);
+    await getSupabase().from('muster_points').update({ name: fields.name }).eq('id', mpId);
   }
   log(campusId,'Admin','Updated muster point: '+mp.name);
 }
@@ -1185,7 +1192,7 @@ async function setMainGateMusterPoint(campusId, mpId){
   const campus = campusById(campusId);
   campus.mainGateMusterPointId = mpId;
   if(supabase){
-    await supabase.from('campuses').update({ main_gate_muster_point_id: mpId }).eq('id', campusId);
+    await getSupabase().from('campuses').update({ main_gate_muster_point_id: mpId }).eq('id', campusId);
   }
   const mp = campus.musterPoints.find(x=>x.id===mpId);
   log(campusId,'Admin','Set "'+(mp?mp.name:mpId)+'" as the Main Gate muster point for '+campus.name);
@@ -1200,7 +1207,7 @@ async function deleteMusterPoint(campusId, mpId){
   const mp = campus.musterPoints.find(x=>x.id===mpId);
   campus.musterPoints = campus.musterPoints.filter(x=>x.id!==mpId);
   if(supabase){
-    await supabase.from('muster_points').delete().eq('id', mpId);
+    await getSupabase().from('muster_points').delete().eq('id', mpId);
   }
   log(campusId,'Admin','Deleted muster point: '+mp.name);
   return true;
@@ -1971,7 +1978,7 @@ async function logCheckEvent(type, personId, campusId, buildingId, roomId){
   state.eventLog.unshift({ time:new Date(), type, personId, campusId, buildingId:buildingId||null, roomId:roomId||null });
   if(state.eventLog.length>2000) state.eventLog.pop();
   if(supabase){
-    await supabase.from('event_log').insert({
+    await getSupabase().from('event_log').insert({
       type,
       person_id: personId,
       campus_id: campusId,
@@ -1994,9 +2001,9 @@ async function doCheckIn(personId, campusId, buildingId, roomId){
 
   if(supabase){
     // Close existing checkin
-    await supabase.from('checkins').update({ out_time: new Date().toISOString() }).eq('person_id', personId).is('out_time', null);
+    await getSupabase().from('checkins').update({ out_time: new Date().toISOString() }).eq('person_id', personId).is('out_time', null);
     // Insert new open checkin
-    await supabase.from('checkins').insert({
+    await getSupabase().from('checkins').insert({
       person_id: personId,
       campus_id: campusId,
       building_id: buildingId || null,
@@ -2013,14 +2020,14 @@ async function doCheckOut(personId){
   log(c.campusId, personId, 'Checked out — '+roomLabel(c.campusId,c.buildingId,c.roomId));
   
   if(supabase){
-    await supabase.from('checkins').update({ out_time: new Date().toISOString() }).eq('person_id', personId).is('out_time', null);
+    await getSupabase().from('checkins').update({ out_time: new Date().toISOString() }).eq('person_id', personId).is('out_time', null);
   }
 
   const person = PEOPLE.find(p=>p.id===personId);
   if(person && person.role==='Visitor' && person.qrStatus!=='expired'){
     person.qrStatus = 'expired';
     if(supabase){
-      await supabase.from('people').update({ qr_status: 'expired' }).eq('id', personId);
+      await getSupabase().from('people').update({ qr_status: 'expired' }).eq('id', personId);
     }
     log(c.campusId, personId, 'Visitor pass EXPIRED on check-out — no longer valid for re-entry');
   }
@@ -2512,7 +2519,7 @@ async function editPerson(personId, fields){
   const p = PEOPLE.find(x=>x.id===personId);
   Object.assign(p, fields);
   if(supabase){
-    await supabase.from('people').update({
+    await getSupabase().from('people').update({
       name: fields.name,
       role: fields.role,
       college: fields.college,
@@ -2530,7 +2537,7 @@ async function deletePerson(personId){
   const idx = PEOPLE.findIndex(x=>x.id===personId);
   PEOPLE.splice(idx,1);
   if(supabase){
-    await supabase.from('people').delete().eq('id', personId);
+    await getSupabase().from('people').delete().eq('id', personId);
   }
   log(p.homeCampus,'Admin','Removed registered person: '+p.name+' ('+p.idNumber+')');
   return true;
@@ -2952,7 +2959,7 @@ function renderAdminNationalDashboard(){
   });
 async function saveSettingsToSupabase(){
   if(!supabase) return;
-  await supabase.from('settings').update({
+  await getSupabase().from('settings').update({
     org_name: settings.orgName,
     occ_warn_pct: settings.occWarnPct,
     occ_crit_pct: settings.occCritPct,
@@ -3224,7 +3231,7 @@ async function log(campusId, actor, action){
   state.auditLog.unshift({ time:new Date(), campusId, actor, action });
   if(state.auditLog.length>300) state.auditLog.pop();
   if(supabase){
-    await supabase.from('audit_log').insert({
+    await getSupabase().from('audit_log').insert({
       campus_id: campusId,
       actor,
       action,
@@ -3246,7 +3253,7 @@ async function sendAlert(campusId, audience, message, sentBy, type, sirenEnabled
   if(state.alerts.length>500) state.alerts.pop();
 
   if(supabase){
-    await supabase.from('alerts').insert({
+    await getSupabase().from('alerts').insert({
       id: altId,
       campus_id: campusId,
       audience,
@@ -3291,7 +3298,7 @@ async function dismissAlertForPerson(alertId, personId){
   if(!a.dismissedByPersonIds.includes(personId)) a.dismissedByPersonIds.push(personId);
 
   if(supabase){
-    await supabase.from('alert_receipts').insert({
+    await getSupabase().from('alert_receipts').insert({
       alert_id: alertId,
       person_id: personId,
       dismissed_at: new Date().toISOString()
@@ -3306,7 +3313,7 @@ async function confirmDeclareEmergency(campusIds, type, sirenEnabled, sirenId){
     
     let emId;
     if(supabase){
-      const { data: insertedEm } = await supabase.from('emergencies').insert({
+      const { data: insertedEm } = await getSupabase().from('emergencies').insert({
         campus_id: campusId,
         type,
         declared_at: declaredAt.toISOString(),
@@ -3329,7 +3336,7 @@ async function confirmDeclareEmergency(campusIds, type, sirenEnabled, sirenId){
             status: 'unaccounted'
           };
         });
-        await supabase.from('muster_roll').insert(rollRows);
+        await getSupabase().from('muster_roll').insert(rollRows);
       }
     }
 
@@ -3347,7 +3354,7 @@ async function clearEmergency(campusId){
   e.status='cleared'; e.clearedAt=new Date();
   
   if(supabase && e.id){
-    await supabase.from('emergencies').update({ status: 'cleared', cleared_at: new Date().toISOString() }).eq('id', e.id);
+    await getSupabase().from('emergencies').update({ status: 'cleared', cleared_at: new Date().toISOString() }).eq('id', e.id);
   }
 
   log(campusId,'Warden','Declared ALL-CLEAR for '+e.type);
@@ -3376,7 +3383,7 @@ async function declareSafe(personId, campusId, declarationType, locationNote){
   
   if(supabase && em.id){
     const mp = musterPointForLocation(campusId, entry.buildingId);
-    await supabase.from('muster_roll').upsert({
+    await getSupabase().from('muster_roll').upsert({
       emergency_id: em.id,
       person_id: personId,
       building_id: entry.buildingId || null,
@@ -3408,7 +3415,7 @@ async function sendDistressSignal(personId, campusId, buildingId, roomId, messag
   state.distressSignals.unshift(signal);
   
   if(supabase){
-    await supabase.from('distress_signals').insert({
+    await getSupabase().from('distress_signals').insert({
       id: disId,
       person_id: personId,
       campus_id: campusId,
@@ -3434,7 +3441,7 @@ async function sendDistressSignal(personId, campusId, buildingId, roomId, messag
 
     if(supabase && em.id){
       const mp = musterPointForLocation(campusId, buildingId);
-      await supabase.from('muster_roll').upsert({
+      await getSupabase().from('muster_roll').upsert({
         emergency_id: em.id,
         person_id: personId,
         building_id: buildingId || null,
@@ -3456,7 +3463,7 @@ async function acknowledgeDistressSignal(signalId, ackBy){
   s.status = 'acknowledged'; s.acknowledgedBy = ackBy; s.acknowledgedAt = new Date();
   
   if(supabase){
-    await supabase.from('distress_signals').update({
+    await getSupabase().from('distress_signals').update({
       status: 'acknowledged',
       acknowledged_by: ackBy,
       acknowledged_at: s.acknowledgedAt.toISOString()
@@ -3472,7 +3479,7 @@ async function resolveDistressSignal(signalId){
   s.status = 'resolved'; s.resolvedAt = new Date();
   
   if(supabase){
-    await supabase.from('distress_signals').update({
+    await getSupabase().from('distress_signals').update({
       status: 'resolved',
       resolved_at: s.resolvedAt.toISOString()
     }).eq('id', signalId);
@@ -3484,7 +3491,7 @@ async function resolveDistressSignal(signalId){
     if(entry && entry.status==='trapped'){
       entry.status='accounted'; entry.accountedAt=new Date(); entry.accountedBy='warden';
       if(supabase && em.id){
-        await supabase.from('muster_roll').update({
+        await getSupabase().from('muster_roll').update({
           status: 'accounted',
           accounted_at: entry.accountedAt.toISOString(),
           accounted_by: 'warden'
