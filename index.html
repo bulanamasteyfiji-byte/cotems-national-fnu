@@ -260,7 +260,7 @@ async function initSupabaseData(){
   if(!sb) { render(); return; }
   try {
     // Fetch reference data
-    const [cRes, bRes, rRes, mpRes, sRes, fRes, idRes, sirRes, admRes] = await Promise.all([
+    const [cRes, bRes, rRes, mpRes, sRes, fRes, idRes, sirRes, admRes, wrdRes] = await Promise.all([
       sb.from('campuses').select('*'),
       sb.from('buildings').select('*'),
       sb.from('rooms').select('*'),
@@ -269,7 +269,8 @@ async function initSupabaseData(){
       sb.from('registration_fields').select('*').order('sort_order'),
       sb.from('id_card_config').select('*').single(),
       sb.from('sirens').select('*'),
-      sb.from('sysadmins').select('*')
+      sb.from('sysadmins').select('*'),
+      sb.from('wardens').select('*')
     ]);
 
     // Build hierarchical CAMPUSES structure
@@ -351,6 +352,24 @@ async function initSupabaseData(){
     }
     if (!settings.sirens.some(s => s.id === 'default')) {
       settings.sirens.unshift({ id:'default', name:'Default Siren (synthesized wail)', mode:'synth', audioData:null });
+    }
+
+    if (wrdRes && wrdRes.data && wrdRes.data.length > 0) {
+      wrdRes.data.forEach(w => {
+        const item = {
+          id: w.id,
+          username: w.username,
+          password: w.password,
+          name: w.name,
+          role: w.role,
+          campusId: w.campus_id,
+          registeredAt: new Date(w.registered_at),
+          registeredBy: w.registered_by
+        };
+        const idx = WARDENS.findIndex(x => x.username.toLowerCase() === w.username.toLowerCase());
+        if (idx >= 0) WARDENS[idx] = item;
+        else WARDENS.push(item);
+      });
     }
 
     // Fetch live user & operational data
@@ -3242,6 +3261,18 @@ function renderAdminWardens(campus){
     WARDENS.push(newOfficer);
     saveWardensStorage();
 
+    if(getSupabase()){
+      getSupabase().from('wardens').upsert({
+        id: newOfficer.id,
+        username: newOfficer.username,
+        password: newOfficer.password,
+        name: newOfficer.name,
+        role: newOfficer.role,
+        campus_id: newOfficer.campusId,
+        registered_by: 'SysAdmin'
+      }).then(()=>{});
+    }
+
     log(assignedCampusId === 'all' ? campus.id : assignedCampusId, 'SysAdmin', `Created new ${role} account: ${username} (${name})`);
     showToast(`Officer ${name} registered successfully!`, 'success');
     render();
@@ -3296,6 +3327,9 @@ function renderAdminWardens(campus){
               if(newPass && newPass.trim()){
                 w.password = newPass.trim();
                 saveWardensStorage();
+                if(getSupabase()){
+                  getSupabase().from('wardens').update({ password: w.password }).eq('id', w.id).then(()=>{});
+                }
                 log(w.campusId==='all'?campus.id:w.campusId, 'SysAdmin', `Reset password for officer ${w.username}`);
                 showToast(`Password updated for ${w.username}!`, 'success');
                 render();
@@ -3310,6 +3344,9 @@ function renderAdminWardens(campus){
               if(newName && newName.trim()){
                 w.name = newName.trim();
                 saveWardensStorage();
+                if(getSupabase()){
+                  getSupabase().from('wardens').update({ name: w.name }).eq('id', w.id).then(()=>{});
+                }
                 log(w.campusId==='all'?campus.id:w.campusId, 'SysAdmin', `Updated officer profile ${w.username}`);
                 showToast(`Officer updated!`, 'success');
                 render();
@@ -3325,6 +3362,9 @@ function renderAdminWardens(campus){
                 if(idx >= 0){
                   WARDENS.splice(idx, 1);
                   saveWardensStorage();
+                  if(getSupabase()){
+                    getSupabase().from('wardens').delete().eq('id', w.id).then(()=>{});
+                  }
                   log(w.campusId==='all'?campus.id:w.campusId, 'SysAdmin', `Deleted officer account ${w.username}`);
                   showToast(`Officer account deleted.`, 'info');
                   render();
