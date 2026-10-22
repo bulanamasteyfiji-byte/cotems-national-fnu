@@ -383,7 +383,7 @@ async function refreshOperationalData(){
     sb.from('audit_log').select('*').order('occurred_at', { ascending: false }).limit(300)
   ]);
 
-  if (pRes.data) {
+  if (pRes.data && pRes.data.length > 0) {
     PEOPLE.length = 0;
     PEOPLE.push(...pRes.data.map(p => ({
       id: p.id,
@@ -408,7 +408,7 @@ async function refreshOperationalData(){
     })));
   }
 
-  if (scRes.data) {
+  if (scRes.data && scRes.data.length > 0) {
     SCANNERS.length = 0;
     SCANNERS.push(...scRes.data.map(s => ({
       id: s.id,
