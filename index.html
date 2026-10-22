@@ -260,7 +260,7 @@ async function initSupabaseData(){
   if(!sb) { render(); return; }
   try {
     // Fetch reference data
-    const [cRes, bRes, rRes, mpRes, sRes, fRes, idRes, sirRes] = await Promise.all([
+    const [cRes, bRes, rRes, mpRes, sRes, fRes, idRes, sirRes, admRes] = await Promise.all([
       sb.from('campuses').select('*'),
       sb.from('buildings').select('*'),
       sb.from('rooms').select('*'),
@@ -268,7 +268,8 @@ async function initSupabaseData(){
       sb.from('settings').select('*').single(),
       sb.from('registration_fields').select('*').order('sort_order'),
       sb.from('id_card_config').select('*').single(),
-      sb.from('sirens').select('*')
+      sb.from('sirens').select('*'),
+      sb.from('sysadmins').select('*')
     ]);
 
     // Build hierarchical CAMPUSES structure
@@ -803,6 +804,59 @@ const SYSADMINS = [
   { id:'ADM1', username:'sysadmin', password:'FnuAdmin#2026', name:'System Administrator', registeredAt:new Date(Date.now()-200*86400000) },
 ];
 
+/* Campus Warden & Security accounts — authorized personnel who manage campus operations
+   (registering staff/students/visitors, monitoring live occupancy, emergency mustering).
+   Login is strictly required before accessing campus registration or operations. */
+const INITIAL_WARDENS = [
+  { id:'WRD-UNI', username:'warden', password:'FnuWarden#2026', name:'Campus Chief Warden', role:'Campus Warden', campusId:'all', registeredAt:new Date(Date.now()-180*86400000) },
+  { id:'SEC-UNI', username:'security', password:'FnuSecurity#2026', name:'Campus Security Officer', role:'Campus Security', campusId:'all', registeredAt:new Date(Date.now()-180*86400000) },
+  { id:'WRD-NAS', username:'warden.nasinu', password:'FnuWarden#2026', name:'Nasinu Campus Warden', role:'Campus Warden', campusId:'nasinu', registeredAt:new Date(Date.now()-120*86400000) },
+  { id:'WRD-NSE', username:'warden.nasese', password:'FnuWarden#2026', name:'Nasese Campus Warden', role:'Campus Warden', campusId:'nasese', registeredAt:new Date(Date.now()-120*86400000) },
+  { id:'WRD-KOR', username:'warden.koronivia', password:'FnuWarden#2026', name:'Koronivia Campus Warden', role:'Campus Warden', campusId:'koronivia', registeredAt:new Date(Date.now()-120*86400000) },
+  { id:'WRD-PAS', username:'warden.pasifika', password:'FnuWarden#2026', name:'Pasifika Campus Warden', role:'Campus Warden', campusId:'pasifika', registeredAt:new Date(Date.now()-120*86400000) },
+  { id:'WRD-SAM', username:'warden.samabula', password:'FnuWarden#2026', name:'Samabula Campus Warden', role:'Campus Warden', campusId:'samabula', registeredAt:new Date(Date.now()-120*86400000) },
+  { id:'WRD-NAT', username:'warden.natabua', password:'FnuWarden#2026', name:'Natabua Campus Warden', role:'Campus Warden', campusId:'natabua', registeredAt:new Date(Date.now()-120*86400000) },
+  { id:'WRD-NAM', username:'warden.namaka', password:'FnuWarden#2026', name:'Namaka Campus Warden', role:'Campus Warden', campusId:'namaka', registeredAt:new Date(Date.now()-120*86400000) },
+  { id:'WRD-BA',  username:'warden.ba', password:'FnuWarden#2026', name:'Ba Campus Warden', role:'Campus Warden', campusId:'ba', registeredAt:new Date(Date.now()-120*86400000) },
+  { id:'WRD-LAB', username:'warden.labasa', password:'FnuWarden#2026', name:'Labasa Campus Warden', role:'Campus Warden', campusId:'labasa', registeredAt:new Date(Date.now()-120*86400000) },
+];
+
+function initWardensList(){
+  let list = INITIAL_WARDENS.slice();
+  try {
+    if(typeof localStorage !== 'undefined'){
+      const saved = localStorage.getItem('cotems_wardens');
+      if(saved){
+        const parsed = JSON.parse(saved);
+        if(Array.isArray(parsed) && parsed.length > 0){
+          parsed.forEach(w => {
+            const idx = list.findIndex(x => x.username.toLowerCase() === w.username.toLowerCase());
+            if(idx >= 0) list[idx] = w;
+            else list.push(w);
+          });
+        }
+      }
+    }
+  } catch(e){}
+  return list;
+}
+
+const WARDENS = initWardensList();
+let wardenSeq = 200;
+
+function saveWardensStorage(){
+  try {
+    if(typeof localStorage !== 'undefined'){
+      localStorage.setItem('cotems_wardens', JSON.stringify(WARDENS));
+    }
+  } catch(e){}
+}
+
+function wardenAuthEmail(u){
+  const clean = (u || '').toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9._-]/g, '').replace(/^[._-]+|[._-]+$/g, '');
+  return `${clean || 'warden'}@warden.cotems.local`;
+}
+
 const SCANNERS = [];
 let scannerSeq = 1;
 function scannerAuthEmail(u){
@@ -905,8 +959,9 @@ const state = {
     announcedAlertIds:[],       // ALL alert ids this login session has already pop-sounded / read aloud
   },
   wardenTab:'dashboard',  // dashboard | log | register | directory  (operational only — no admin tab)
+  wardenAuth:{ step:'login', loggedIn:false, wardenId:null, username:null, name:null, role:null, assignedCampusId:null },
   sysAdmin:{ step:'login', loggedIn:false, campusId:null }, // login | dashboard
-  adminSubTab:'buildings', // buildings | campuses | musterpoints | fields | scanners | idcard | settings
+  adminSubTab:'buildings', // buildings | campuses | musterpoints | scanners | wardens | fields | idcard | alerts | nationaldash | settings
   scannerReg:{campusId:null, level:null, buildingId:null, roomId:null},
   modal:null,             // {type:'qr'|'declareEmergency', ...} | null
   directorySearch:'',
@@ -1310,8 +1365,8 @@ function el(tag, attrs={}, children=[]){
 
 function topbar(){
   const roleLabel = state.screen==='mobileapp' ? 'COTEMS Mobile App'
-    : state.screen==='warden' ? 'Campus Warden · '+(campusById(state.currentCampusId)?.name||'')
-    : state.screen==='sysadmin' ? 'System Administrator'
+    : state.screen==='warden' ? (state.wardenAuth?.loggedIn ? `Campus Warden · ${(campusById(state.currentCampusId)?.name||'')} (${state.wardenAuth.name})` : 'Campus Warden & Security Login')
+    : state.screen==='sysadmin' ? (state.sysAdmin?.loggedIn ? 'System Administrator' : 'System Admin Login')
     : state.screen==='national' ? 'National OHS & Security Command'
     : '';
   return el('header',{class:'topbar'},[
@@ -1324,6 +1379,8 @@ function topbar(){
     ]),
     el('div',{class:'session'},[
       roleLabel? el('span',{},roleLabel): null,
+      (state.screen==='warden' && state.wardenAuth?.loggedIn) ? el('button',{class:'linklike',onclick:logoutWarden},'🔓 Log out') : null,
+      (state.screen==='sysadmin' && state.sysAdmin?.loggedIn) ? el('button',{class:'linklike',onclick:()=>{state.sysAdmin.loggedIn=false;state.sysAdmin.step='login';render();}},'🔓 Log out') : null,
       state.screen!=='landing' ? el('button',{class:'linklike',onclick:()=>{state.screen='landing';render();}},'← Switch role') : null,
     ].filter(Boolean))
   ]);
@@ -1678,10 +1735,18 @@ function renderLanding(){
     el('p',{},'Staff and students log in to view their digital ID for scanning. Registered scanner devices log in with their own credentials to act as the fixed QR reader for one room, building, or campus gate.'),
     el('div',{class:'go'},'Open mobile app →'),
   ]));
-  grid.appendChild(el('div',{class:'role-card teal',onclick:()=>{state.screen='warden';state.currentCampusId=CAMPUSES[0].id;render();}},[
+  grid.appendChild(el('div',{class:'role-card teal',onclick:()=>{
+    state.screen='warden';
+    if(!state.wardenAuth.loggedIn){
+      state.wardenAuth.step='login';
+      state.currentCampusId = CAMPUSES[0].id;
+    }
+    render();
+  }},[
     el('h3',{},'🛡️ Campus Warden / Security'),
-    el('p',{},'Day-to-day campus operations: register students, staff, and visitors (auto-generating their digital ID), monitor live occupancy, run emergency mustering, and manage the registered-persons directory for your campus.'),
-    el('div',{class:'go'},'Open campus dashboard →'),
+    el('div',{class:'badge',style:'margin-bottom:8px;background:#e6f4f2;color:#0d7a71;font-weight:700;display:inline-block;'},'🔒 Login Required'),
+    el('p',{},'Restricted access for authorized Wardens & Security officers: register students, staff, and visitors (auto-generating digital IDs), monitor live occupancy, and run emergency mustering.'),
+    el('div',{class:'go'}, state.wardenAuth.loggedIn ? 'Open campus dashboard →' : 'Warden & security login →'),
   ]));
   grid.appendChild(el('div',{class:'role-card',style:'border-top-color:#5b6b7a;',onclick:()=>{state.screen='sysadmin';state.sysAdmin={step:'login',loggedIn:false,campusId:CAMPUSES[0].id};render();}},[
     el('h3',{},'⚙️ System Administrator'),
@@ -2143,16 +2208,175 @@ function breadcrumb(items){
   return b;
 }
 
+function logoutWarden(){
+  const officerName = (state.wardenAuth && state.wardenAuth.name) || 'Warden';
+  log(state.currentCampusId, officerName, 'Officer logged out of Campus Warden / Security session');
+  state.wardenAuth = { step:'login', loggedIn:false, wardenId:null, username:null, name:null, role:null, assignedCampusId:null };
+  showToast('Logged out of Campus Warden & Security session.', 'info');
+  render();
+}
+
+function renderWardenLogin(){
+  const wrap = el('div',{});
+  wrap.appendChild(el('div',{class:'banner info'},[
+    el('strong',{},'🛡️ Restricted Area — Authorized Personnel Only: '),
+    'Campus operations (occupant tracking, live emergency mustering, and manual registration of students, staff, and visitors) are strictly restricted. Only authenticated Campus Wardens and Security officers can access this portal.'
+  ]));
+
+  const card = el('div',{class:'card',style:'max-width:440px;margin:20px auto;text-align:left;box-shadow:0 8px 28px rgba(15,48,87,0.12);'});
+  
+  const titleBox = el('div',{style:'text-align:center;margin-bottom:18px;'},[
+    el('div',{style:'font-size:38px;margin-bottom:8px;'},'🛡️'),
+    el('h2',{style:'color:var(--navy);margin:0 0 6px;font-size:20px;'},'Campus Warden / Security Login'),
+    el('p',{class:'muted',style:'font-size:12px;margin:0;'},'Sign in to access campus operations and registration'),
+  ]);
+  card.appendChild(titleBox);
+
+  const userInput = el('input',{type:'text',placeholder:'e.g. warden, security, or warden.nasinu',style:'width:100%;margin-bottom:12px;'});
+  const passInput = el('input',{type:'password',placeholder:'Password',style:'width:100%;margin-bottom:12px;'});
+  
+  const campusSelect = el('select',{style:'width:100%;margin-bottom:16px;'});
+  CAMPUSES.forEach(c=>{
+    campusSelect.appendChild(el('option',{value:c.id, ...(c.id===state.currentCampusId?{selected:'selected'}:{})}, c.name));
+  });
+
+  userInput.addEventListener('input', ()=>{
+    const val = userInput.value.trim().toLowerCase();
+    const matched = WARDENS.find(w => w.username.toLowerCase() === val);
+    if(matched && matched.campusId && matched.campusId !== 'all'){
+      campusSelect.value = matched.campusId;
+    }
+  });
+
+  card.appendChild(el('label',{style:'display:block;font-size:12px;font-weight:700;color:var(--navy);margin-bottom:4px;'},'Username'));
+  card.appendChild(userInput);
+  card.appendChild(el('label',{style:'display:block;font-size:12px;font-weight:700;color:var(--navy);margin-bottom:4px;'},'Password'));
+  card.appendChild(passInput);
+  card.appendChild(el('label',{style:'display:block;font-size:12px;font-weight:700;color:var(--navy);margin-bottom:4px;'},'Reporting Campus'));
+  card.appendChild(campusSelect);
+
+  const loginBtn = el('button',{class:'btn teal',style:'width:100%;font-size:14px;padding:10px 14px;font-weight:700;margin-bottom:14px;',onclick:async ()=>{
+    const uName = userInput.value.trim();
+    const pwd = passInput.value;
+    if(!uName || !pwd){ showToast('Please enter username and password.', 'error'); return; }
+
+    loginBtn.disabled = true;
+    loginBtn.textContent = '⏳ Authenticating...';
+
+    try {
+      const email = wardenAuthEmail(uName);
+      const sb = getSupabase();
+      let authUser = null;
+      if(sb){
+        const { data, error } = await sb.auth.signInWithPassword({ email, password: pwd });
+        if(!error && data && data.user) authUser = data.user;
+      }
+
+      const warden = WARDENS.find(w => w.username.toLowerCase() === uName.toLowerCase());
+      if(!authUser && (!warden || warden.password !== pwd)){
+        showToast('Incorrect username or password.', 'error');
+        loginBtn.disabled = false;
+        loginBtn.textContent = '🛡️ Log in to Campus Operations';
+        return;
+      }
+
+      const selectedCampus = campusSelect.value;
+      if(warden && warden.campusId !== 'all' && warden.campusId !== selectedCampus){
+        showToast(`Account assigned to ${campusById(warden.campusId)?.name || warden.campusId}. Switching to assigned campus.`, 'info');
+      }
+
+      const effectiveCampusId = (warden && warden.campusId !== 'all') ? warden.campusId : selectedCampus;
+
+      state.wardenAuth.loggedIn = true;
+      state.wardenAuth.step = 'dashboard';
+      state.wardenAuth.wardenId = warden ? warden.id : 'WRD-CUSTOM';
+      state.wardenAuth.username = warden ? warden.username : uName;
+      state.wardenAuth.name = warden ? warden.name : (authUser ? (authUser.user_metadata?.full_name || uName) : uName);
+      state.wardenAuth.role = warden ? warden.role : 'Campus Warden';
+      state.wardenAuth.assignedCampusId = warden ? warden.campusId : 'all';
+      state.currentCampusId = effectiveCampusId;
+
+      log(effectiveCampusId, state.wardenAuth.name, `Officer logged into ${campusById(effectiveCampusId)?.name || 'campus'}`);
+      showToast(`Welcome, ${state.wardenAuth.name}!`, 'success');
+      render();
+    } catch(err){
+      console.error("Warden login error:", err);
+      showToast('Login failed: ' + err.message, 'error');
+      loginBtn.disabled = false;
+      loginBtn.textContent = '🛡️ Log in to Campus Operations';
+    }
+  }},'🛡️ Log in to Campus Operations');
+
+  card.appendChild(loginBtn);
+
+  const demoBox = el('div',{style:'background:#f4f7fa;border:1px dashed var(--line);border-radius:8px;padding:10px 12px;margin-top:10px;font-size:11.5px;'});
+  demoBox.appendChild(el('div',{style:'font-weight:700;color:var(--navy);margin-bottom:6px;'},'🔑 Authorized Demo Accounts:'));
+  demoBox.appendChild(el('div',{style:'margin-bottom:4px;'},[
+    el('strong',{},'Universal Warden: '), 'username: ', el('code',{},'warden'), ' · password: ', el('code',{},'FnuWarden#2026')
+  ]));
+  demoBox.appendChild(el('div',{style:'margin-bottom:4px;'},[
+    el('strong',{},'Universal Security: '), 'username: ', el('code',{},'security'), ' · password: ', el('code',{},'FnuSecurity#2026')
+  ]));
+  demoBox.appendChild(el('div',{style:'margin-bottom:8px;'},[
+    el('strong',{},'Campus-specific: '), el('code',{},'warden.nasinu'), ', ', el('code',{},'warden.nasese'), ', ', el('code',{},'warden.koronivia'), ' (same password)'
+  ]));
+
+  const fillRow = el('div',{style:'display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;'});
+  const mkFillBtn = (label, u, p, cId) => el('button',{
+    class:'btn sm outline',
+    style:'font-size:10.5px;padding:3px 7px;',
+    onclick:(e)=>{
+      e.preventDefault();
+      userInput.value = u;
+      passInput.value = p;
+      if(cId) campusSelect.value = cId;
+    }
+  }, label);
+
+  fillRow.appendChild(mkFillBtn('Quick: Chief Warden', 'warden', 'FnuWarden#2026', 'nasinu'));
+  fillRow.appendChild(mkFillBtn('Quick: Security Officer', 'security', 'FnuSecurity#2026', 'nasinu'));
+  fillRow.appendChild(mkFillBtn('Quick: Nasinu Warden', 'warden.nasinu', 'FnuWarden#2026', 'nasinu'));
+  fillRow.appendChild(mkFillBtn('Quick: Koronivia Warden', 'warden.koronivia', 'FnuWarden#2026', 'koronivia'));
+  demoBox.appendChild(fillRow);
+
+  card.appendChild(demoBox);
+  wrap.appendChild(card);
+  return wrap;
+}
+
 /* ---------- Warden / Security dashboard ---------- */
 function renderWarden(){
+  if(!state.wardenAuth.loggedIn){
+    return renderWardenLogin();
+  }
   const wrap = el('div',{});
-  const campus = campusById(state.currentCampusId);
+  const campus = campusById(state.currentCampusId) || CAMPUSES[0];
   const emergency = state.emergencies[campus.id];
+  const officer = state.wardenAuth;
+  const isAllCampus = officer.assignedCampusId === 'all';
 
   const picker = el('select',{style:'margin-left:10px;',onchange:(e)=>{state.currentCampusId=e.target.value;render();}});
-  CAMPUSES.forEach(c=> picker.appendChild(el('option',{value:c.id, ...(c.id===campus.id?{selected:'selected'}:{})}, c.name)));
-  const head = el('div',{class:'flex between wrap',style:'align-items:center;gap:8px;'},[
-    el('div',{},[ el('span',{class:'muted',style:'font-size:12.5px;'},'Viewing campus:'), picker ]),
+  CAMPUSES.forEach(c=> {
+    const disabled = !isAllCampus && c.id !== officer.assignedCampusId;
+    picker.appendChild(el('option',{
+      value:c.id,
+      ...(c.id===campus.id?{selected:'selected'}:{}),
+      ...(disabled?{disabled:'disabled'}:{})
+    }, c.name + (disabled ? ' (Restricted)' : '')));
+  });
+
+  const officerBadge = el('div',{style:'display:flex;align-items:center;gap:8px;font-size:12px;background:#eef6f5;padding:4px 10px;border-radius:18px;border:1px solid #cce5e1;'},[
+    el('span',{},'🛡️'),
+    el('strong',{style:'color:var(--navy);'}, officer.name),
+    el('span',{class:'badge',style:'background:#0d7a71;color:#fff;font-size:10px;padding:2px 6px;'}, officer.role),
+    el('button',{class:'btn sm outline',style:'padding:2px 7px;font-size:10.5px;margin-left:4px;',onclick:logoutWarden},'🔓 Log out')
+  ]);
+
+  const head = el('div',{class:'flex between wrap',style:'align-items:center;gap:8px;margin-bottom:12px;'},[
+    el('div',{style:'display:flex;align-items:center;gap:10px;flex-wrap:wrap;'},[
+      el('div',{},[ el('span',{class:'muted',style:'font-size:12.5px;'},'Viewing campus:'), picker ]),
+      officerBadge
+    ]),
     el('div',{style:'display:flex;gap:8px;flex-wrap:wrap;'},[
       el('button',{class:'btn teal',onclick:()=>openSendAlertModal(campus.id)},'📢 Send Alert'),
       !emergency || emergency.status==='cleared'
@@ -2413,17 +2637,21 @@ function renderRegColumn(roleKey, campus){
     if(!vals.idNumber) vals.idNumber = genId(meta.idPrefix.toLowerCase());
     if(!vals.homeCampus) vals.homeCampus = campus.id;
 
+    const registrar = (state.wardenAuth && state.wardenAuth.loggedIn)
+      ? `${state.wardenAuth.name} (${campus.name})`
+      : 'Warden — '+campus.name;
+
     const existing = PEOPLE.find(p=>p.idNumber.toLowerCase()===vals.idNumber.toLowerCase());
     if(existing){
       if(meta.roleValue==='Visitor' && existing.role==='Visitor' && existing.qrStatus==='expired'){
-        const updated = reissueVisitorPass(existing, vals, 'Warden — '+campus.name);
+        const updated = reissueVisitorPass(existing, vals, registrar);
         openQrModal(updated);
         return;
       }
       alert('That ID number is already registered'+(existing.qrStatus==='active'?' and still active — no need to re-register.':'.'));
       return;
     }
-    const person = registerPerson({ ...vals, role:meta.roleValue, registeredBy:'Warden — '+campus.name });
+    const person = registerPerson({ ...vals, role:meta.roleValue, registeredBy: registrar });
     openQrModal(person);
   }}, meta.buttonLabel));
   return col;
@@ -2683,7 +2911,7 @@ function renderSysAdmin(){
   wrap.appendChild(el('div',{class:'banner info'},'System Administrator access — separate from Campus Warden accounts. Buildings, muster points, and scanner registration below apply to the campus selected above; campuses, registration fields, ID design, and settings apply system-wide.'));
 
   const subtabs = el('div',{class:'tabs'});
-  [['buildings','Buildings & rooms'],['campuses','Campuses'],['musterpoints','Muster points'],['scanners','Scanner devices'],['fields','Registration fields'],['idcard','Digital ID design'],['alerts','Alerts & Sounds'],['nationaldash','National Dashboard'],['settings','System settings']].forEach(([key,label])=>{
+  [['buildings','Buildings & rooms'],['campuses','Campuses'],['musterpoints','Muster points'],['scanners','Scanner devices'],['wardens','Wardens & Security'],['fields','Registration fields'],['idcard','Digital ID design'],['alerts','Alerts & Sounds'],['nationaldash','National Dashboard'],['settings','System settings']].forEach(([key,label])=>{
     subtabs.appendChild(el('button',{class: state.adminSubTab===key?'active':'', onclick:()=>{state.adminSubTab=key;render();}},label));
   });
   wrap.appendChild(subtabs);
@@ -2692,6 +2920,7 @@ function renderSysAdmin(){
   else if(state.adminSubTab==='campuses') wrap.appendChild(renderAdminCampuses());
   else if(state.adminSubTab==='musterpoints') wrap.appendChild(renderAdminMusterPoints(campus));
   else if(state.adminSubTab==='scanners') wrap.appendChild(renderAdminScanners(campus));
+  else if(state.adminSubTab==='wardens') wrap.appendChild(renderAdminWardens(campus));
   else if(state.adminSubTab==='fields') wrap.appendChild(renderAdminRegFields());
   else if(state.adminSubTab==='idcard') wrap.appendChild(renderAdminIdCardDesign());
   else if(state.adminSubTab==='alerts') wrap.appendChild(renderAdminAlertsSounds());
@@ -2939,6 +3168,179 @@ function renderAdminScanners(campus){
     ]));
   }
   wrap.appendChild(wizardCard);
+  return wrap;
+}
+
+function renderAdminWardens(campus){
+  const wrap = el('div',{});
+  wrap.appendChild(el('h2',{class:'section-title'},[
+    'Campus Wardens & Security Officers',
+    el('span',{class:'badge'}, WARDENS.length + ' accounts')
+  ]));
+  wrap.appendChild(el('div',{class:'banner info'},
+    'Restricted personnel management. Only verified accounts below can access the Campus Warden & Security portal to register staff, students, and visitors, track campus occupancy, and coordinate emergency evacuations.'
+  ));
+
+  // Add new officer card
+  const addCard = el('div',{class:'card',style:'margin-bottom:16px;max-width:680px;'});
+  addCard.appendChild(el('h3',{style:'margin-top:0;color:var(--navy);'},'➕ Register New Warden / Security Officer'));
+
+  const nameInput = el('input',{type:'text',placeholder:'e.g. Sakiusa Rokovada',style:'width:100%;margin-bottom:10px;'});
+  const userInput = el('input',{type:'text',placeholder:'e.g. warden.nasinu2 or sec.labasa',style:'width:100%;margin-bottom:4px;'});
+  const userHint = el('div',{style:'font-size:11px;color:var(--slate);margin-bottom:10px;'},'Lowercase letters, numbers, dots, and hyphens only.');
+  userInput.addEventListener('input', ()=>{
+    userInput.value = userInput.value.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9._-]/g, '');
+  });
+  const passInput = el('input',{type:'text',placeholder:'Password',value:'FnuWarden#'+new Date().getFullYear(),style:'width:100%;margin-bottom:10px;'});
+  
+  const roleSelect = el('select',{style:'width:100%;margin-bottom:10px;'});
+  ['Campus Warden','Campus Security'].forEach(r=> roleSelect.appendChild(el('option',{value:r}, r)));
+
+  const campusSelect = el('select',{style:'width:100%;margin-bottom:14px;'});
+  campusSelect.appendChild(el('option',{value:'all'},'All Campuses (Universal Access)'));
+  CAMPUSES.forEach(c=> campusSelect.appendChild(el('option',{value:c.id}, c.name)));
+
+  addCard.appendChild(regField('Full Name', nameInput));
+  addCard.appendChild(regField('Username', userInput));
+  addCard.appendChild(userHint);
+  addCard.appendChild(regField('Password', passInput));
+  addCard.appendChild(regField('Role', roleSelect));
+  addCard.appendChild(regField('Assigned Campus', campusSelect));
+
+  const addBtn = el('button',{class:'btn teal',onclick:()=>{
+    const name = nameInput.value.trim();
+    const username = userInput.value.trim().toLowerCase();
+    const password = passInput.value;
+    const role = roleSelect.value;
+    const assignedCampusId = campusSelect.value;
+
+    if(!name || !username || !password){
+      showToast('Please fill in Name, Username, and Password.', 'error');
+      return;
+    }
+
+    if(WARDENS.some(w => w.username.toLowerCase() === username)){
+      showToast('That username is already taken by another warden/security officer.', 'error');
+      return;
+    }
+    if(SYSADMINS.some(a => a.username.toLowerCase() === username)){
+      showToast('That username is already taken by a system administrator.', 'error');
+      return;
+    }
+
+    wardenSeq++;
+    const newOfficer = {
+      id: 'WRD' + wardenSeq,
+      username,
+      password,
+      name,
+      role,
+      campusId: assignedCampusId,
+      registeredAt: new Date(),
+      registeredBy: 'SysAdmin'
+    };
+    WARDENS.push(newOfficer);
+    saveWardensStorage();
+
+    log(assignedCampusId === 'all' ? campus.id : assignedCampusId, 'SysAdmin', `Created new ${role} account: ${username} (${name})`);
+    showToast(`Officer ${name} registered successfully!`, 'success');
+    render();
+  }},'✅ Register Officer');
+
+  addCard.appendChild(addBtn);
+  wrap.appendChild(addCard);
+
+  // Table of authorized officers
+  const tableCard = el('div',{class:'card',style:'overflow-x:auto;'});
+  tableCard.appendChild(el('h3',{style:'margin-top:0;color:var(--navy);'},'Authorized Officers Directory'));
+
+  const table = el('table',{class:'table',style:'width:100%;font-size:12.5px;'});
+  const thead = el('thead',{},el('tr',{},[
+    el('th',{},'Officer Name'),
+    el('th',{},'Username'),
+    el('th',{},'Role'),
+    el('th',{},'Campus Scope'),
+    el('th',{},'Password'),
+    el('th',{},'Actions'),
+  ]));
+  table.appendChild(thead);
+
+  const tbody = el('tbody',{});
+  WARDENS.forEach(w=>{
+    const isRoot = w.username === 'warden' || w.username === 'security';
+    const cName = w.campusId === 'all' ? 'All Campuses' : (campusById(w.campusId)?.name || w.campusId);
+
+    const tr = el('tr',{},[
+      el('td',{},[
+        el('strong',{style:'color:var(--navy);'}, w.name),
+        isRoot ? el('span',{class:'badge',style:'margin-left:6px;font-size:10px;background:#eef6f5;color:#0d7a71;'},'Core Demo') : null
+      ].filter(Boolean)),
+      el('td',{},el('code',{}, w.username)),
+      el('td',{},el('span',{class:'badge '+(w.role==='Campus Security'?'coral':'teal')}, w.role)),
+      el('td',{},el('span',{class:'badge',style:'background:#f4f7fa;color:var(--navy);'}, cName)),
+      el('td',{},[
+        el('span',{style:'font-family:monospace;letter-spacing:1px;'}, '••••••••'),
+        el('button',{
+          class:'btn sm outline',
+          style:'margin-left:6px;padding:2px 6px;font-size:10.5px;',
+          onclick:()=> alert(`Credentials for ${w.name}:\nUsername: ${w.username}\nPassword: ${w.password}\nCampus: ${cName}`)
+        },'👁️ Show')
+      ]),
+      el('td',{},[
+        el('div',{style:'display:flex;gap:6px;'},[
+          el('button',{
+            class:'btn sm outline',
+            style:'padding:3px 7px;font-size:11px;',
+            onclick:()=>{
+              const newPass = prompt(`Reset password for ${w.username} (${w.name}):`, w.password);
+              if(newPass && newPass.trim()){
+                w.password = newPass.trim();
+                saveWardensStorage();
+                log(w.campusId==='all'?campus.id:w.campusId, 'SysAdmin', `Reset password for officer ${w.username}`);
+                showToast(`Password updated for ${w.username}!`, 'success');
+                render();
+              }
+            }
+          },'🔑 Reset'),
+          el('button',{
+            class:'btn sm outline',
+            style:'padding:3px 7px;font-size:11px;',
+            onclick:()=>{
+              const newName = prompt('Officer full name:', w.name);
+              if(newName && newName.trim()){
+                w.name = newName.trim();
+                saveWardensStorage();
+                log(w.campusId==='all'?campus.id:w.campusId, 'SysAdmin', `Updated officer profile ${w.username}`);
+                showToast(`Officer updated!`, 'success');
+                render();
+              }
+            }
+          },'✏️ Edit'),
+          !isRoot ? el('button',{
+            class:'btn sm coral',
+            style:'padding:3px 7px;font-size:11px;',
+            onclick:()=>{
+              if(confirm(`Delete officer account "${w.username}" (${w.name})?`)){
+                const idx = WARDENS.indexOf(w);
+                if(idx >= 0){
+                  WARDENS.splice(idx, 1);
+                  saveWardensStorage();
+                  log(w.campusId==='all'?campus.id:w.campusId, 'SysAdmin', `Deleted officer account ${w.username}`);
+                  showToast(`Officer account deleted.`, 'info');
+                  render();
+                }
+              }
+            }
+          },'🗑️') : null
+        ].filter(Boolean))
+      ])
+    ]);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  tableCard.appendChild(table);
+  wrap.appendChild(tableCard);
+
   return wrap;
 }
 
