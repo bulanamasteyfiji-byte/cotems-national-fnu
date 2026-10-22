@@ -324,13 +324,32 @@ async function initSupabaseData(){
       };
     }
 
-    if (sirRes.data) {
+    if (sRes.data) {
+      if (sRes.data.org_name) settings.orgName = sRes.data.org_name;
+      if (sRes.data.occ_warn_pct !== undefined) settings.occWarnPct = sRes.data.occ_warn_pct;
+      if (sRes.data.occ_crit_pct !== undefined) settings.occCritPct = sRes.data.occ_crit_pct;
+      if (sRes.data.emergency_types && sRes.data.emergency_types.length > 0) settings.emergencyTypes = sRes.data.emergency_types;
+      if (sRes.data.siren_id_for_type) settings.sirenIdForType = sRes.data.siren_id_for_type;
+      if (sRes.data.notifications) Object.assign(settings.notifications, sRes.data.notifications);
+      if (sRes.data.dashboard_config) {
+        if (sRes.data.dashboard_config.widgets) {
+          settings.dashboardConfig = sRes.data.dashboard_config;
+        } else {
+          Object.assign(settings.dashboardConfig, sRes.data.dashboard_config);
+        }
+      }
+    }
+
+    if (sirRes.data && sirRes.data.length > 0) {
       settings.sirens = sirRes.data.map(s => ({
         id: s.id,
         name: s.name,
-        mode: s.mode,
+        mode: s.mode || (s.id === 'default' ? 'synth' : 'audio'),
         audioData: s.audio_storage_path
       }));
+    }
+    if (!settings.sirens.some(s => s.id === 'default')) {
+      settings.sirens.unshift({ id:'default', name:'Default Siren (synthesized wail)', mode:'synth', audioData:null });
     }
 
     // Fetch live user & operational data
@@ -504,6 +523,38 @@ function setupRealtimeSubscriptions(){
     .on('postgres_changes', { event: '*', schema: 'public', table: 'muster_roll' }, () => { refreshOperationalData().then(render); })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'alerts' }, () => { refreshOperationalData().then(render); })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'distress_signals' }, () => { refreshOperationalData().then(render); })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'sirens' }, async () => {
+      try {
+        const { data } = await sb.from('sirens').select('*');
+        if (data && data.length > 0) {
+          settings.sirens = data.map(s => ({
+            id: s.id,
+            name: s.name,
+            mode: s.mode || (s.id === 'default' ? 'synth' : 'audio'),
+            audioData: s.audio_storage_path
+          }));
+          if (!settings.sirens.some(s => s.id === 'default')) {
+            settings.sirens.unshift({ id:'default', name:'Default Siren (synthesized wail)', mode:'synth', audioData:null });
+          }
+          render();
+        }
+      } catch(e) { console.warn("Realtime sirens sync error:", e); }
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, async () => {
+      try {
+        const { data } = await sb.from('settings').select('*').single();
+        if (data) {
+          if (data.org_name) settings.orgName = data.org_name;
+          if (data.occ_warn_pct !== undefined) settings.occWarnPct = data.occ_warn_pct;
+          if (data.occ_crit_pct !== undefined) settings.occCritPct = data.occ_crit_pct;
+          if (data.emergency_types) settings.emergencyTypes = data.emergency_types;
+          if (data.siren_id_for_type) settings.sirenIdForType = data.siren_id_for_type;
+          if (data.notifications) Object.assign(settings.notifications, data.notifications);
+          if (data.dashboard_config) settings.dashboardConfig = data.dashboard_config;
+          render();
+        }
+      } catch(e) { console.warn("Realtime settings sync error:", e); }
+    })
     .subscribe();
   realtimeChannels.push(channel);
 }
@@ -2985,17 +3036,23 @@ function renderAdminNationalDashboard(){
     card.appendChild(el('label',{style:'display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px;'},[cb,label]));
   });
 async function saveSettingsToSupabase(){
-  if(!supabase) return;
-  await getSupabase().from('settings').update({
-    org_name: settings.orgName,
-    occ_warn_pct: settings.occWarnPct,
-    occ_crit_pct: settings.occCritPct,
-    emergency_types: settings.emergencyTypes,
-    siren_id_for_type: settings.sirenIdForType,
-    notifications: settings.notifications,
-    dashboard_config: settings.dashboardConfig || settings.dashboard_config,
-    updated_at: new Date().toISOString()
-  }).eq('id', 1);
+  const sb = getSupabase();
+  if(!sb) return;
+  try {
+    const { error } = await sb.from('settings').update({
+      org_name: settings.orgName,
+      occ_warn_pct: settings.occWarnPct,
+      occ_crit_pct: settings.occCritPct,
+      emergency_types: settings.emergencyTypes,
+      siren_id_for_type: settings.sirenIdForType,
+      notifications: settings.notifications,
+      dashboard_config: settings.dashboardConfig || settings.dashboard_config,
+      updated_at: new Date().toISOString()
+    }).eq('id', 1);
+    if(error) console.error("saveSettingsToSupabase error:", error);
+  } catch(e){
+    console.error("saveSettingsToSupabase exception:", e);
+  }
 }
 
   card.appendChild(el('div',{style:'display:flex;gap:8px;margin-top:14px;'},[
@@ -3030,10 +3087,23 @@ function renderAdminAlertsSounds(){
         setTimeout(()=>stopSiren(), 3000); // short 3s preview
       }},'▶ Preview'));
       if(s.id!=='default'){
-        btns.appendChild(el('button',{class:'btn sm coral',onclick:()=>{
+        btns.appendChild(el('button',{class:'btn sm coral',onclick:async ()=>{
+          if(!confirm('Are you sure you want to delete siren "' + s.name + '"?')) return;
+          const sb = getSupabase();
+          if(sb){
+            try {
+              await sb.from('sirens').delete().eq('id', s.id);
+              if(s.audioData && s.audioData.includes('/siren-audio/')){
+                const parts = s.audioData.split('/siren-audio/');
+                if(parts[1]) await sb.storage.from('siren-audio').remove([parts[1]]);
+              }
+            } catch(e){ console.warn("Failed to delete siren from Supabase:", e); }
+          }
           settings.sirens = settings.sirens.filter(x=>x.id!==s.id);
           Object.keys(settings.sirenIdForType).forEach(t=>{ if(settings.sirenIdForType[t]===s.id) settings.sirenIdForType[t]='default'; });
-          renderSirenList();
+          await saveSettingsToSupabase();
+          showToast("Siren '" + s.name + "' removed.", "info");
+          render();
         }},'Remove'));
       }
       row.appendChild(btns);
@@ -3048,19 +3118,76 @@ function renderAdminAlertsSounds(){
   const sirenFileInput = el('input',{type:'file',accept:'audio/*',style:'width:100%;margin-bottom:8px;'});
   addSirenBox.appendChild(sirenNameInput);
   addSirenBox.appendChild(sirenFileInput);
-  addSirenBox.appendChild(el('button',{class:'btn teal sm',style:'width:100%;',onclick:()=>{
-    if(!sirenNameInput.value.trim()){ alert('Enter a name for this siren.'); return; }
+
+  const uploadBtn = el('button',{class:'btn teal sm',style:'width:100%;',onclick:async ()=>{
+    const name = sirenNameInput.value.trim();
+    if(!name){ alert('Enter a name for this siren.'); return; }
     const file = sirenFileInput.files && sirenFileInput.files[0];
     if(!file){ alert('Choose an audio file to upload.'); return; }
-    const reader = new FileReader();
-    reader.onload = ()=>{
+
+    uploadBtn.disabled = true;
+    uploadBtn.textContent = '⏳ Uploading and saving siren...';
+
+    try {
       sirenSeq++;
-      settings.sirens.push({ id:'siren'+sirenSeq, name:sirenNameInput.value.trim(), mode:'audio', audioData:reader.result });
-      sirenNameInput.value=''; sirenFileInput.value='';
+      const sirenId = 'siren_' + Date.now();
+      let audioUrl = null;
+      const sb = getSupabase();
+
+      if(sb){
+        const cleanName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const storagePath = `${sirenId}_${cleanName}`;
+        try {
+          const { data: uploadData, error: uploadErr } = await sb.storage
+            .from('siren-audio')
+            .upload(storagePath, file, { cacheControl: '3600', upsert: true });
+
+          if(!uploadErr && uploadData){
+            const { data: pubData } = sb.storage.from('siren-audio').getPublicUrl(storagePath);
+            if(pubData && pubData.publicUrl) audioUrl = pubData.publicUrl;
+          } else if(uploadErr) {
+            console.warn("Storage upload failed, falling back to data URL:", uploadErr);
+          }
+        } catch(stErr){
+          console.warn("Storage upload exception, falling back to data URL:", stErr);
+        }
+      }
+
+      if(!audioUrl){
+        audioUrl = await new Promise((resolve, reject)=>{
+          const reader = new FileReader();
+          reader.onload = ()=>resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+      }
+
+      if(sb){
+        const { error: insErr } = await sb.from('sirens').insert({
+          id: sirenId,
+          name: name,
+          mode: 'audio',
+          audio_storage_path: audioUrl,
+          created_at: new Date().toISOString()
+        });
+        if(insErr) throw insErr;
+      }
+
+      settings.sirens.push({ id: sirenId, name, mode: 'audio', audioData: audioUrl });
+      sirenNameInput.value = '';
+      sirenFileInput.value = '';
+      showToast("Siren '" + name + "' uploaded and saved successfully!", "success");
       render();
-    };
-    reader.readAsDataURL(file);
-  }},'⬆ Upload new siren sound'));
+    } catch(err){
+      console.error("Error adding siren:", err);
+      showToast("Error saving siren: " + err.message, "error");
+    } finally {
+      uploadBtn.disabled = false;
+      uploadBtn.textContent = '⬆ Upload new siren sound';
+    }
+  }},'⬆ Upload new siren sound');
+
+  addSirenBox.appendChild(uploadBtn);
   sirenCard.appendChild(addSirenBox);
   wrap.appendChild(sirenCard);
 
@@ -3073,7 +3200,11 @@ function renderAdminAlertsSounds(){
     row.appendChild(el('span',{style:'font-size:12.5px;'}, t));
     const sel = el('select',{});
     settings.sirens.forEach(s=>sel.appendChild(el('option',{value:s.id, ...((settings.sirenIdForType[t]||'default')===s.id?{selected:'selected'}:{})}, s.name)));
-    sel.addEventListener('change',(e)=>{ settings.sirenIdForType[t]=e.target.value; });
+    sel.addEventListener('change', async (e)=>{
+      settings.sirenIdForType[t]=e.target.value;
+      await saveSettingsToSupabase();
+      showToast("Default siren for " + t + " updated.", "success");
+    });
     row.appendChild(sel);
     mapCard.appendChild(row);
   });
@@ -3084,21 +3215,34 @@ function renderAdminAlertsSounds(){
   chimeCard.appendChild(el('h3',{style:'margin-top:0;color:var(--navy);'},'🔔 Notification pop sound'));
   chimeCard.appendChild(el('p',{class:'muted',style:'font-size:11.5px;margin-top:-4px;'},'Plays once for every alert a person receives (not just emergencies) the moment they see it.'));
   const chimeToggle = el('input',{type:'checkbox', ...(settings.notifications.popupSoundEnabled?{checked:'checked'}:{})});
-  chimeToggle.addEventListener('change',()=>{ settings.notifications.popupSoundEnabled = chimeToggle.checked; });
+  chimeToggle.addEventListener('change', async ()=>{
+    settings.notifications.popupSoundEnabled = chimeToggle.checked;
+    await saveSettingsToSupabase();
+  });
   chimeCard.appendChild(el('label',{style:'display:flex;align-items:center;gap:8px;font-size:12.5px;margin-bottom:10px;'},[chimeToggle,'Enable notification pop sound']));
   chimeCard.appendChild(el('button',{class:'btn sm outline',onclick:()=>playNotificationChime()},'▶ Preview chime'));
   const chimeFileInput = el('input',{type:'file',accept:'audio/*',style:'width:100%;margin:10px 0 6px;'});
   chimeCard.appendChild(el('p',{class:'muted',style:'font-size:10.5px;'},settings.notifications.customChimeAudio ? 'Custom chime uploaded.' : 'Using the default built-in chime.'));
   chimeCard.appendChild(chimeFileInput);
   chimeCard.appendChild(el('div',{style:'display:flex;gap:8px;margin-top:8px;'},[
-    el('button',{class:'btn teal sm',onclick:()=>{
+    el('button',{class:'btn teal sm',onclick:async ()=>{
       const file = chimeFileInput.files && chimeFileInput.files[0];
       if(!file){ alert('Choose an audio file first.'); return; }
       const reader = new FileReader();
-      reader.onload = ()=>{ settings.notifications.customChimeAudio = reader.result; render(); };
+      reader.onload = async ()=>{
+        settings.notifications.customChimeAudio = reader.result;
+        await saveSettingsToSupabase();
+        showToast('Custom notification chime saved!', 'success');
+        render();
+      };
       reader.readAsDataURL(file);
     }},'⬆ Upload custom chime'),
-    el('button',{class:'btn sm outline',onclick:()=>{ settings.notifications.customChimeAudio=null; render(); }},'Reset to default'),
+    el('button',{class:'btn sm outline',onclick:async ()=>{
+      settings.notifications.customChimeAudio=null;
+      await saveSettingsToSupabase();
+      showToast('Reset chime to default.', 'info');
+      render();
+    }},'Reset to default'),
   ]));
   wrap.appendChild(chimeCard);
 
@@ -3107,14 +3251,20 @@ function renderAdminAlertsSounds(){
   voiceCard.appendChild(el('h3',{style:'margin-top:0;color:var(--navy);'},'🗣️ Voice read-aloud'));
   voiceCard.appendChild(el('p',{class:'muted',style:'font-size:11.5px;margin-top:-4px;'},'Reads every alert message aloud in an English female voice the moment it\'s received.'));
   const voiceToggle = el('input',{type:'checkbox', ...(settings.notifications.voiceReadoutEnabled?{checked:'checked'}:{})});
-  voiceToggle.addEventListener('change',()=>{ settings.notifications.voiceReadoutEnabled = voiceToggle.checked; });
+  voiceToggle.addEventListener('change', async ()=>{
+    settings.notifications.voiceReadoutEnabled = voiceToggle.checked;
+    await saveSettingsToSupabase();
+  });
   voiceCard.appendChild(el('label',{style:'display:flex;align-items:center;gap:8px;font-size:12.5px;margin-bottom:10px;'},[voiceToggle,'Enable voice read-aloud']));
 
   const rateInput = el('input',{type:'range',min:'0.7',max:'1.3',step:'0.05',value:String(settings.notifications.voiceRate),style:'width:100%;'});
   rateInput.addEventListener('input',(e)=>{ settings.notifications.voiceRate = Number(e.target.value); });
+  rateInput.addEventListener('change', async ()=>{ await saveSettingsToSupabase(); });
   voiceCard.appendChild(regField('Speaking rate', rateInput));
+
   const pitchInput = el('input',{type:'range',min:'0.8',max:'1.5',step:'0.05',value:String(settings.notifications.voicePitch),style:'width:100%;'});
   pitchInput.addEventListener('input',(e)=>{ settings.notifications.voicePitch = Number(e.target.value); });
+  pitchInput.addEventListener('change', async ()=>{ await saveSettingsToSupabase(); });
   voiceCard.appendChild(regField('Voice pitch', pitchInput));
 
   voiceCard.appendChild(el('button',{class:'btn sm outline',style:'width:100%;',onclick:()=>speakMessage('This is a test of the FNU emergency alert voice announcement system.')},'▶ Test voice'));
@@ -3126,9 +3276,30 @@ function renderAdminAlertsSounds(){
   lifetimeCard.appendChild(el('p',{class:'muted',style:'font-size:11.5px;margin-top:-4px;'},
     'An active "emergency declared" alert always disappears from a person\'s phone the instant the warden declares all-clear for it — that\'s never time-based. Every other alert (all-clear notices and broadcasts) stays visible on a person\'s phone for the duration below, or until they dismiss it themselves, whichever happens first.'));
   const retentionInput = el('input',{type:'number', min:'1', max:'168', value:String(settings.notifications.alertRetentionHours), style:'width:120px;'});
-  retentionInput.addEventListener('change',(e)=>{ settings.notifications.alertRetentionHours = Math.max(1, Number(e.target.value)||24); render(); });
+  retentionInput.addEventListener('change', async (e)=>{
+    settings.notifications.alertRetentionHours = Math.max(1, Number(e.target.value)||24);
+    await saveSettingsToSupabase();
+    showToast('Alert retention updated to ' + settings.notifications.alertRetentionHours + 'h', 'success');
+    render();
+  });
   lifetimeCard.appendChild(regField('Alert retention (hours)', retentionInput));
   wrap.appendChild(lifetimeCard);
+
+  // ---- Global Save Button ----
+  const saveAllBtn = el('button',{class:'btn teal',style:'margin-top:10px;padding:12px 24px;font-size:14px;',onclick:async ()=>{
+    saveAllBtn.disabled = true;
+    saveAllBtn.textContent = '⏳ Saving sound & alert settings...';
+    try {
+      await saveSettingsToSupabase();
+      showToast('Alert and sound settings saved successfully to Supabase!', 'success');
+    } catch(e) {
+      showToast('Error saving settings: ' + e.message, 'error');
+    } finally {
+      saveAllBtn.disabled = false;
+      saveAllBtn.textContent = '💾 Save sound & alert settings';
+    }
+  }},'💾 Save sound & alert settings');
+  wrap.appendChild(saveAllBtn);
 
   return wrap;
 }
