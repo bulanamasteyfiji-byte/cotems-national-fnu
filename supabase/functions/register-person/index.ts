@@ -25,7 +25,15 @@ serve(async (req) => {
     let password = ''
     for (let i = 0; i < 8; i++) password += chars[Math.floor(Math.random() * chars.length)]
 
-    const email = `${idNumber}@person.cotems.local`
+    const cleanId = (idNumber || '').trim()
+    let safeEmailUser = cleanId
+      .toLowerCase()
+      .replace(/\s+/g, '-')
+      .replace(/[^a-z0-9._-]/g, '')
+      .replace(/^[._-]+|[._-]+$/g, '')
+    if (!safeEmailUser) safeEmailUser = 'person-' + Math.floor(100000 + Math.random() * 900000)
+
+    const email = `${safeEmailUser}@person.cotems.local`
 
     const { data: authUser, error: authError } = await supabaseClient.auth.admin.createUser({
       email,

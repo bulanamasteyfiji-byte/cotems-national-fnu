@@ -754,6 +754,10 @@ const SYSADMINS = [
 
 const SCANNERS = [];
 let scannerSeq = 1;
+function scannerAuthEmail(u){
+  const clean = (u || '').toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9._-]/g, '').replace(/^[._-]+|[._-]+$/g, '');
+  return `${clean || 'scanner'}@scanner.cotems.local`;
+}
 function scannerLocationLabel(s){
   const campus = campusById(s.campusId);
   if(!campus) return 'Unknown campus';
@@ -765,7 +769,7 @@ function scannerLocationLabel(s){
   return campus.name+' / '+b.name+' / '+(r?r.name:'Unknown room');
 }
 async function registerScanner({campusId, buildingId, roomId, username, password, registeredBy}){
-  if(supabase){
+  if(getSupabase() || window.supabase){
     try {
       const res = await fetch(`${SUPABASE_URL}/functions/v1/register-scanner`, {
         method: 'POST',
@@ -776,12 +780,14 @@ async function registerScanner({campusId, buildingId, roomId, username, password
       if(data.error) throw new Error(data.error);
 
       await refreshOperationalData();
-      const sc = SCANNERS.find(s=>s.username === username);
+      const sc = SCANNERS.find(s=>s.username === username || s.username.toLowerCase() === username.toLowerCase() || scannerAuthEmail(s.username) === scannerAuthEmail(username));
       log(campusId, registeredBy, 'Registered new scanner device: '+username+' at '+scannerLocationLabel(sc || {campusId, buildingId, roomId}));
+      showToast("Scanner " + username + " registered successfully!", "success");
       return sc;
     } catch(err){
       console.error("register-scanner Edge Function failed:", err);
       showToast("Register scanner error: " + err.message, "error");
+      throw err;
     }
   }
 
@@ -792,6 +798,7 @@ async function registerScanner({campusId, buildingId, roomId, username, password
   };
   SCANNERS.push(scanner);
   log(campusId, registeredBy, 'Registered new scanner device: '+username+' at '+scannerLocationLabel(scanner));
+  showToast("Scanner " + username + " registered (offline mode)", "success");
   return scanner;
 }
 
@@ -1809,11 +1816,11 @@ function renderMobileApp(){
       const pwd = passInput.value;
       if(!uName || !pwd){ alert('Enter scanner username and password.'); return; }
       
-      const email = `${uName}@scanner.cotems.local`;
+      const email = scannerAuthEmail(uName);
       const sb = getSupabase();
       const { data, error } = sb ? await sb.auth.signInWithPassword({ email, password: pwd }) : { error: true };
       
-      const scanner = SCANNERS.find(s=>s.username.toLowerCase()===uName.toLowerCase());
+      const scanner = SCANNERS.find(s=>s.username.toLowerCase()===uName.toLowerCase() || scannerAuthEmail(s.username)===email);
       if(error && (!scanner || scanner.password!==pwd)){ showToast('Incorrect scanner username or password.', 'error'); return; }
       if(scanner && !scanner.active){ alert('This scanner device has been deactivated by System Administration.'); return; }
       
@@ -2845,18 +2852,38 @@ function renderAdminScanners(campus){
     const room = (building && sr.roomId) ? building.rooms.find(x=>x.id===sr.roomId) : null;
     const locationLabel = campus.name + (building?' / '+building.name:' — Campus entrance') + (room?' / '+room.name:'');
     wizardCard.appendChild(el('div',{class:'banner ok'},'Location: '+locationLabel));
-    const userInput = el('input',{type:'text',placeholder:'e.g. scanner-nasinu-cbhts-lh1',style:'width:100%;margin-bottom:10px;'});
+    const userInput = el('input',{type:'text',placeholder:'e.g. scanner-nasinu-cbhts-lh1',style:'width:100%;margin-bottom:4px;'});
+    const userHint = el('div',{style:'font-size:11.5px;color:var(--slate);margin-bottom:12px;'},'Lowercase letters, numbers, and hyphens (e.g. scanner-nasinu-cbhts-lh1). Spaces are auto-converted.');
+    userInput.addEventListener('input', ()=>{
+      userInput.value = userInput.value.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9._-]/g, '');
+    });
     const passInput = el('input',{type:'text',placeholder:'Password',value:genToken(),style:'width:100%;margin-bottom:10px;'});
     wizardCard.appendChild(regField('Scanner username', userInput));
+    wizardCard.appendChild(userHint);
     wizardCard.appendChild(regField('Scanner password', passInput));
-    wizardCard.appendChild(el('div',{style:'display:flex;gap:8px;'},[
-      el('button',{class:'btn coral',onclick:()=>{
-        if(!userInput.value.trim()){ alert('Enter a username for this scanner.'); return; }
-        if(SCANNERS.some(s=>s.username.toLowerCase()===userInput.value.trim().toLowerCase())){ alert('That username is already taken.'); return; }
-        registerScanner({ campusId:sr.campusId, buildingId:sr.buildingId, roomId:sr.roomId, username:userInput.value.trim(), password:passInput.value, registeredBy:'Sys Admin' });
+
+    const regBtn = el('button',{class:'btn coral',onclick:async ()=>{
+      const rawUser = userInput.value.trim();
+      if(!rawUser){ alert('Enter a username for this scanner.'); return; }
+      const cleanUser = rawUser.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9._-]/g, '').replace(/^[._-]+|[._-]+$/g, '');
+      if(!cleanUser){ alert('Please enter a valid scanner username using letters, numbers, or hyphens.'); return; }
+      if(SCANNERS.some(s=>s.username.toLowerCase()===cleanUser || scannerAuthEmail(s.username)===scannerAuthEmail(cleanUser))){
+        alert('That username is already taken by another registered scanner.'); return;
+      }
+      regBtn.disabled = true;
+      regBtn.textContent = '⏳ Registering scanner...';
+      try {
+        await registerScanner({ campusId:sr.campusId, buildingId:sr.buildingId, roomId:sr.roomId, username:cleanUser, password:passInput.value, registeredBy:'Sys Admin' });
         state.scannerReg = {campusId:null, level:null, buildingId:null, roomId:null};
         render();
-      }},'✅ Register scanner'),
+      } catch(e) {
+        regBtn.disabled = false;
+        regBtn.textContent = '✅ Register scanner';
+      }
+    }},'✅ Register scanner');
+
+    wizardCard.appendChild(el('div',{style:'display:flex;gap:8px;'},[
+      regBtn,
       el('button',{class:'btn outline',onclick:()=>{ state.scannerReg={campusId:null,level:null,buildingId:null,roomId:null}; render(); }},'Cancel'),
     ]));
   }

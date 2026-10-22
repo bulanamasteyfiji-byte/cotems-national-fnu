@@ -42,7 +42,14 @@ serve(async (req) => {
       )
       if (updateAuthErr) throw updateAuthErr
     } else {
-      const email = `${scanner.username}@scanner.cotems.local`
+      const cleanUsername = (scanner.username || '').trim()
+      let safeEmailUser = cleanUsername
+        .toLowerCase()
+        .replace(/\s+/g, '-')
+        .replace(/[^a-z0-9._-]/g, '')
+        .replace(/^[._-]+|[._-]+$/g, '')
+      if (!safeEmailUser) safeEmailUser = 'scanner-' + scanner.id.toLowerCase()
+      const email = `${safeEmailUser}@scanner.cotems.local`
       const { data: authUser, error: authError } = await supabaseClient.auth.admin.createUser({
         email,
         password: newPassword,
