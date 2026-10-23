@@ -355,21 +355,7 @@ async function initSupabaseData(){
     }
 
     if (wrdRes && wrdRes.data && wrdRes.data.length > 0) {
-      wrdRes.data.forEach(w => {
-        const item = {
-          id: w.id,
-          username: w.username,
-          password: w.password,
-          name: w.name,
-          role: w.role,
-          campusId: w.campus_id,
-          registeredAt: new Date(w.registered_at),
-          registeredBy: w.registered_by
-        };
-        const idx = WARDENS.findIndex(x => x.username.toLowerCase() === w.username.toLowerCase());
-        if (idx >= 0) WARDENS[idx] = item;
-        else WARDENS.push(item);
-      });
+      syncWardensFromData(wrdRes.data);
     }
 
     // Fetch live user & operational data
@@ -390,7 +376,7 @@ async function initSupabaseData(){
 async function refreshOperationalData(){
   const sb = getSupabase();
   if (!sb) return;
-  const [pRes, scRes, chRes, evRes, emRes, mrRes, alRes, dsRes, auRes] = await Promise.all([
+  const [pRes, scRes, chRes, evRes, emRes, mrRes, alRes, dsRes, auRes, wrdRes] = await Promise.all([
     sb.from('people').select('*'),
     sb.from('scanners').select('*'),
     sb.from('checkins').select('*').is('out_time', null),
@@ -399,7 +385,8 @@ async function refreshOperationalData(){
     sb.from('muster_roll').select('*'),
     sb.from('alerts').select('*').order('sent_at', { ascending: false }).limit(200),
     sb.from('distress_signals').select('*').order('sent_at', { ascending: false }).limit(100),
-    sb.from('audit_log').select('*').order('occurred_at', { ascending: false }).limit(300)
+    sb.from('audit_log').select('*').order('occurred_at', { ascending: false }).limit(300),
+    sb.from('wardens').select('*')
   ]);
 
   if (pRes.data && pRes.data.length > 0) {
@@ -532,6 +519,10 @@ async function refreshOperationalData(){
       action: a.action
     }));
   }
+
+  if (wrdRes && wrdRes.data && wrdRes.data.length > 0) {
+    syncWardensFromData(wrdRes.data);
+  }
 }
 
 function setupRealtimeSubscriptions(){
@@ -543,6 +534,15 @@ function setupRealtimeSubscriptions(){
     .on('postgres_changes', { event: '*', schema: 'public', table: 'muster_roll' }, () => { refreshOperationalData().then(render); })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'alerts' }, () => { refreshOperationalData().then(render); })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'distress_signals' }, () => { refreshOperationalData().then(render); })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'wardens' }, async () => {
+      try {
+        const { data, error } = await sb.from('wardens').select('*');
+        if (!error && data) {
+          syncWardensFromData(data);
+          render();
+        }
+      } catch(e) { console.warn("Realtime wardens sync error:", e); }
+    })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'sirens' }, async () => {
       try {
         const { data } = await sb.from('sirens').select('*');
@@ -869,6 +869,25 @@ function saveWardensStorage(){
       localStorage.setItem('cotems_wardens', JSON.stringify(WARDENS));
     }
   } catch(e){}
+}
+
+function syncWardensFromData(data){
+  if (!Array.isArray(data) || data.length === 0) return;
+  const mapped = data.map(w => ({
+    id: w.id,
+    username: w.username,
+    password: w.password,
+    name: w.name,
+    role: w.role || 'Campus Warden',
+    campusId: w.campus_id || 'all',
+    registeredAt: w.registered_at ? new Date(w.registered_at) : new Date(),
+    registeredBy: w.registered_by || 'SysAdmin',
+    active: w.active !== false
+  }));
+
+  WARDENS.length = 0;
+  WARDENS.push(...mapped);
+  saveWardensStorage();
 }
 
 function wardenAuthEmail(u){
@@ -2291,7 +2310,28 @@ function renderWardenLogin(){
         if(!error && data && data.user) authUser = data.user;
       }
 
-      const warden = WARDENS.find(w => w.username.toLowerCase() === uName.toLowerCase());
+      let warden = WARDENS.find(w => w.username.toLowerCase() === uName.toLowerCase());
+      if(!warden && sb){
+        try {
+          const { data: dbWrd } = await sb.from('wardens').select('*').eq('username', uName.toLowerCase()).maybeSingle();
+          if (dbWrd) {
+            warden = {
+              id: dbWrd.id,
+              username: dbWrd.username,
+              password: dbWrd.password,
+              name: dbWrd.name,
+              role: dbWrd.role || 'Campus Warden',
+              campusId: dbWrd.campus_id || 'all',
+              registeredAt: new Date(dbWrd.registered_at),
+              registeredBy: dbWrd.registered_by || 'SysAdmin',
+              active: dbWrd.active !== false
+            };
+            const idx = WARDENS.findIndex(w => w.username.toLowerCase() === warden.username.toLowerCase());
+            if(idx >= 0) WARDENS[idx] = warden; else WARDENS.push(warden);
+            saveWardensStorage();
+          }
+        } catch(e){}
+      }
       if(!authUser && (!warden || warden.password !== pwd)){
         showToast('Incorrect username or password.', 'error');
         loginBtn.disabled = false;
@@ -2894,26 +2934,38 @@ function renderSysAdmin(){
     const passInput = el('input',{type:'password',placeholder:'Password',style:'width:100%;margin-bottom:14px;'});
     card.appendChild(userInput);
     card.appendChild(passInput);
-    card.appendChild(el('button',{class:'btn coral',style:'width:100%;',onclick:async ()=>{
+    const loginBtn = el('button',{class:'btn coral',style:'width:100%;',onclick:async ()=>{
       const uName = userInput.value.trim();
       const pwd = passInput.value;
       if(!uName || !pwd){ alert('Enter username and password.'); return; }
       
+      loginBtn.disabled = true;
+      loginBtn.textContent = '⏳ Authenticating...';
+
       const email = `${uName}@admin.cotems.local`;
       const sb = getSupabase();
       const { data, error } = sb ? await sb.auth.signInWithPassword({ email, password: pwd }) : { error: true };
       
       if(error){
         const admin = SYSADMINS.find(a=>a.username.toLowerCase()===uName.toLowerCase());
-        if(!admin || (admin.password && admin.password!==pwd)){ showToast('Incorrect username or password.', 'error'); return; }
+        if(!admin || (admin.password && admin.password!==pwd)){
+          showToast('Incorrect username or password.', 'error');
+          loginBtn.disabled = false;
+          loginBtn.textContent = 'Log in';
+          return;
+        }
         sa.loggedInAdminId = admin.id;
       } else {
         sa.loggedInAdminId = 'ADM1';
       }
       
       sa.loggedIn = true; sa.campusId = sa.campusId || CAMPUSES[0].id; sa.step='dashboard';
+      if(sb){
+        try { await refreshOperationalData(); } catch(e){}
+      }
       render();
-    }},'Log in'));
+    }},'Log in');
+    card.appendChild(loginBtn);
     wrap.appendChild(card);
     return wrap;
   }
@@ -3226,7 +3278,7 @@ function renderAdminWardens(campus){
   addCard.appendChild(regField('Role', roleSelect));
   addCard.appendChild(regField('Assigned Campus', campusSelect));
 
-  const addBtn = el('button',{class:'btn teal',onclick:()=>{
+  const addBtn = el('button',{class:'btn teal',onclick: async ()=>{
     const name = nameInput.value.trim();
     const username = userInput.value.trim().toLowerCase();
     const password = passInput.value;
@@ -3247,34 +3299,59 @@ function renderAdminWardens(campus){
       return;
     }
 
-    wardenSeq++;
+    addBtn.disabled = true;
+    addBtn.textContent = '⏳ Saving to Supabase...';
+
+    const newOfficerId = 'WRD-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).substring(2,6).toUpperCase();
     const newOfficer = {
-      id: 'WRD' + wardenSeq,
+      id: newOfficerId,
       username,
       password,
       name,
       role,
       campusId: assignedCampusId,
       registeredAt: new Date(),
-      registeredBy: 'SysAdmin'
+      registeredBy: 'SysAdmin',
+      active: true
     };
+
+    const sb = getSupabase();
+    if(sb){
+      try {
+        const { error } = await sb.from('wardens').insert([{
+          id: newOfficer.id,
+          username: newOfficer.username,
+          password: newOfficer.password,
+          name: newOfficer.name,
+          role: newOfficer.role,
+          campus_id: newOfficer.campusId,
+          registered_by: 'SysAdmin',
+          active: true
+        }]);
+
+        if (error) {
+          console.error("Supabase insert warden error:", error);
+          showToast(`Supabase error: ${error.message || 'Failed to save warden in Supabase.'}`, 'error');
+          addBtn.disabled = false;
+          addBtn.textContent = '✅ Register Officer';
+          return;
+        }
+      } catch (err) {
+        console.error("Failed to connect to Supabase:", err);
+        showToast(`Connection error: ${err.message || 'Failed to communicate with Supabase.'}`, 'error');
+        addBtn.disabled = false;
+        addBtn.textContent = '✅ Register Officer';
+        return;
+      }
+    }
+
     WARDENS.push(newOfficer);
     saveWardensStorage();
 
-    if(getSupabase()){
-      getSupabase().from('wardens').upsert({
-        id: newOfficer.id,
-        username: newOfficer.username,
-        password: newOfficer.password,
-        name: newOfficer.name,
-        role: newOfficer.role,
-        campus_id: newOfficer.campusId,
-        registered_by: 'SysAdmin'
-      }).then(()=>{});
-    }
-
     log(assignedCampusId === 'all' ? campus.id : assignedCampusId, 'SysAdmin', `Created new ${role} account: ${username} (${name})`);
-    showToast(`Officer ${name} registered successfully!`, 'success');
+    showToast(`Officer ${name} registered and saved to Supabase!`, 'success');
+    nameInput.value = '';
+    userInput.value = '';
     render();
   }},'✅ Register Officer');
 
@@ -3322,16 +3399,28 @@ function renderAdminWardens(campus){
           el('button',{
             class:'btn sm outline',
             style:'padding:3px 7px;font-size:11px;',
-            onclick:()=>{
+            onclick: async (e)=>{
+              const btn = e.target;
               const newPass = prompt(`Reset password for ${w.username} (${w.name}):`, w.password);
               if(newPass && newPass.trim()){
-                w.password = newPass.trim();
-                saveWardensStorage();
-                if(getSupabase()){
-                  getSupabase().from('wardens').update({ password: w.password }).eq('id', w.id).then(()=>{});
+                const trimmed = newPass.trim();
+                const sb = getSupabase();
+                if(sb){
+                  btn.disabled = true;
+                  btn.textContent = '⏳ Saving...';
+                  const { error } = await sb.from('wardens').update({ password: trimmed }).eq('id', w.id);
+                  if(error){
+                    console.error("Supabase password update error:", error);
+                    showToast(`Failed to update password: ${error.message}`, 'error');
+                    btn.disabled = false;
+                    btn.textContent = '🔑 Reset';
+                    return;
+                  }
                 }
+                w.password = trimmed;
+                saveWardensStorage();
                 log(w.campusId==='all'?campus.id:w.campusId, 'SysAdmin', `Reset password for officer ${w.username}`);
-                showToast(`Password updated for ${w.username}!`, 'success');
+                showToast(`Password updated for ${w.username} in Supabase!`, 'success');
                 render();
               }
             }
@@ -3339,16 +3428,28 @@ function renderAdminWardens(campus){
           el('button',{
             class:'btn sm outline',
             style:'padding:3px 7px;font-size:11px;',
-            onclick:()=>{
+            onclick: async (e)=>{
+              const btn = e.target;
               const newName = prompt('Officer full name:', w.name);
               if(newName && newName.trim()){
-                w.name = newName.trim();
-                saveWardensStorage();
-                if(getSupabase()){
-                  getSupabase().from('wardens').update({ name: w.name }).eq('id', w.id).then(()=>{});
+                const trimmed = newName.trim();
+                const sb = getSupabase();
+                if(sb){
+                  btn.disabled = true;
+                  btn.textContent = '⏳ Saving...';
+                  const { error } = await sb.from('wardens').update({ name: trimmed }).eq('id', w.id);
+                  if(error){
+                    console.error("Supabase update name error:", error);
+                    showToast(`Failed to update officer name: ${error.message}`, 'error');
+                    btn.disabled = false;
+                    btn.textContent = '✏️ Edit';
+                    return;
+                  }
                 }
+                w.name = trimmed;
+                saveWardensStorage();
                 log(w.campusId==='all'?campus.id:w.campusId, 'SysAdmin', `Updated officer profile ${w.username}`);
-                showToast(`Officer updated!`, 'success');
+                showToast(`Officer updated in Supabase!`, 'success');
                 render();
               }
             }
@@ -3356,17 +3457,28 @@ function renderAdminWardens(campus){
           !isRoot ? el('button',{
             class:'btn sm coral',
             style:'padding:3px 7px;font-size:11px;',
-            onclick:()=>{
-              if(confirm(`Delete officer account "${w.username}" (${w.name})?`)){
+            onclick: async (e)=>{
+              if(confirm(`Delete officer account "${w.username}" (${w.name})? This will permanently remove them from Supabase.`)){
+                const btn = e.target;
+                const sb = getSupabase();
+                if(sb){
+                  btn.disabled = true;
+                  btn.textContent = '⏳';
+                  const { error } = await sb.from('wardens').delete().eq('id', w.id);
+                  if(error){
+                    console.error("Supabase delete error:", error);
+                    showToast(`Failed to delete officer: ${error.message}`, 'error');
+                    btn.disabled = false;
+                    btn.textContent = '🗑️';
+                    return;
+                  }
+                }
                 const idx = WARDENS.indexOf(w);
                 if(idx >= 0){
                   WARDENS.splice(idx, 1);
                   saveWardensStorage();
-                  if(getSupabase()){
-                    getSupabase().from('wardens').delete().eq('id', w.id).then(()=>{});
-                  }
                   log(w.campusId==='all'?campus.id:w.campusId, 'SysAdmin', `Deleted officer account ${w.username}`);
-                  showToast(`Officer account deleted.`, 'info');
+                  showToast(`Officer account deleted from Supabase.`, 'info');
                   render();
                 }
               }
