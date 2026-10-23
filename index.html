@@ -329,10 +329,23 @@ async function initSupabaseData(){
     }
 
     if (idRes.data) {
+      const rawRoles = idRes.data.roles || {};
+      const normalizedRoles = {};
+      ['Staff', 'Student', 'Visitor'].forEach(r => {
+        const key = r.toLowerCase();
+        const roleData = rawRoles[key] || rawRoles[r] || {};
+        normalizedRoles[r] = {
+          color1: roleData.color1 || roleData.gradientFrom || (r==='Staff'?'#0f3057':r==='Student'?'#0e7c7b':'#c1440e'),
+          color2: roleData.color2 || roleData.gradientTo || (r==='Staff'?'#123a68':r==='Student'?'#0a5f5e':'#9c360b'),
+          subtitle: roleData.subtitle || (r + ' Identity Card'),
+          footer: roleData.footer || 'Permanent digital ID'
+        };
+        normalizedRoles[key] = normalizedRoles[r];
+      });
       settings.idCardConfig = {
-        qrCaption: idRes.data.qr_caption,
-        showAvatar: idRes.data.show_avatar,
-        roles: idRes.data.roles
+        qrCaption: idRes.data.qr_caption || 'Scan to check in / out',
+        showAvatar: idRes.data.show_avatar !== false,
+        roles: normalizedRoles
       };
     }
 
@@ -1668,21 +1681,33 @@ function renderModal(){
 function buildIdCardElement(p, qrTargetId){
   qrTargetId = qrTargetId || 'qrRenderTarget';
   const expired = p.qrStatus==='expired';
-  const conf = settings.idCardConfig.roles[p.role] || settings.idCardConfig.roles.Staff;
+
+  const roleName = p.role || 'Staff';
+  const roleKey = roleName.toLowerCase();
+  const cfgRoles = (settings.idCardConfig && settings.idCardConfig.roles) || {};
+  const rawConf = cfgRoles[roleName] || cfgRoles[roleKey] || cfgRoles.Staff || cfgRoles.staff || {};
+
+  const conf = {
+    color1: rawConf.color1 || rawConf.gradientFrom || (roleKey === 'student' ? '#0e7c7b' : roleKey === 'visitor' ? '#c1440e' : '#0f3057'),
+    color2: rawConf.color2 || rawConf.gradientTo || (roleKey === 'student' ? '#0a5f5e' : roleKey === 'visitor' ? '#9c360b' : '#123a68'),
+    subtitle: rawConf.subtitle || (roleName + ' Identity Card'),
+    footer: rawConf.footer || (expired ? 'EXPIRED — no longer valid' : (roleKey === 'visitor' ? 'Valid until check-out' : 'Permanent digital ID'))
+  };
+
   const card = el('div',{class:'id-card'+(expired?' expired':'')});
 
   const head = el('div',{class:'id-head',style:'background:linear-gradient(135deg,'+conf.color1+','+conf.color2+');'});
   head.appendChild(el('div',{class:'id-head-row'},[
     el('div',{class:'logo-badge'},[el('img',{src:CURRENT_LOGO,alt:'FNU'})]),
     el('div',{class:'headtext'},[
-      el('div',{class:'org'},settings.orgName),
+      el('div',{class:'org'},settings.orgName || 'Fiji National University'),
       el('div',{class:'subtitle'},conf.subtitle),
     ]),
   ]));
   head.appendChild(el('div',{class:'id-head-accent'}));
   card.appendChild(head);
 
-  if(settings.idCardConfig.showAvatar){
+  if(settings.idCardConfig && settings.idCardConfig.showAvatar){
     card.appendChild(el('div',{class:'avatar-wrap'},[
       el('div',{class:'avatar'}, [
         personSilhouetteSvg(),
@@ -1693,35 +1718,39 @@ function buildIdCardElement(p, qrTargetId){
     ]));
   }
 
-  const body = el('div',{class:'id-body',style: settings.idCardConfig.showAvatar?'':'padding-top:22px;'});
-  body.appendChild(el('div',{class:'nm'},p.name));
-  body.appendChild(el('div',{class:'idnum'},p.idNumber));
+  const body = el('div',{class:'id-body',style: (settings.idCardConfig && settings.idCardConfig.showAvatar)?'':'padding-top:22px;'});
+  body.appendChild(el('div',{class:'nm'}, p.name || 'Unnamed'));
+  body.appendChild(el('div',{class:'idnum'}, p.idNumber || ''));
 
   const fieldList = el('div',{class:'field-list'});
-  fieldList.appendChild(el('div',{class:'field-row'},[el('span',{class:'k'},'Campus'), el('span',{class:'v'},campusById(p.homeCampus).name)]));
-  if(p.role==='Staff'){
-    fieldList.appendChild(el('div',{class:'field-row'},[el('span',{class:'k'},'Designation'), el('span',{class:'v'},p.designation)]));
-    fieldList.appendChild(el('div',{class:'field-row'},[el('span',{class:'k'},'Department'), el('span',{class:'v'},p.department)]));
-  } else if(p.role==='Student'){
-    fieldList.appendChild(el('div',{class:'field-row'},[el('span',{class:'k'},'College'), el('span',{class:'v'},p.college)]));
-    fieldList.appendChild(el('div',{class:'field-row'},[el('span',{class:'k'},'Year of Enrolment'), el('span',{class:'v'},p.yearOfEnrolment)]));
-  } else if(p.role==='Visitor'){
-    fieldList.appendChild(el('div',{class:'field-row'},[el('span',{class:'k'},'Host'), el('span',{class:'v'},p.hostName)]));
-    fieldList.appendChild(el('div',{class:'field-row'},[el('span',{class:'k'},'Purpose'), el('span',{class:'v'},p.purposeOfVisit)]));
+  const campusObj = campusById(p.homeCampus);
+  const campusName = campusObj ? campusObj.name : (p.homeCampus || 'Nasinu Campus (HQ)');
+  fieldList.appendChild(el('div',{class:'field-row'},[el('span',{class:'k'},'Campus'), el('span',{class:'v'}, campusName)]));
+
+  if(roleKey === 'staff'){
+    if(p.designation) fieldList.appendChild(el('div',{class:'field-row'},[el('span',{class:'k'},'Designation'), el('span',{class:'v'},p.designation)]));
+    if(p.department) fieldList.appendChild(el('div',{class:'field-row'},[el('span',{class:'k'},'Department'), el('span',{class:'v'},p.department)]));
+  } else if(roleKey === 'student'){
+    if(p.college) fieldList.appendChild(el('div',{class:'field-row'},[el('span',{class:'k'},'College'), el('span',{class:'v'},p.college)]));
+    if(p.yearOfEnrolment) fieldList.appendChild(el('div',{class:'field-row'},[el('span',{class:'k'},'Year of Enrolment'), el('span',{class:'v'},p.yearOfEnrolment)]));
+  } else if(roleKey === 'visitor'){
+    if(p.hostName) fieldList.appendChild(el('div',{class:'field-row'},[el('span',{class:'k'},'Host'), el('span',{class:'v'},p.hostName)]));
+    if(p.purposeOfVisit) fieldList.appendChild(el('div',{class:'field-row'},[el('span',{class:'k'},'Purpose'), el('span',{class:'v'},p.purposeOfVisit)]));
   }
   if(p.customFields && Object.keys(p.customFields).length>0){
     Object.entries(p.customFields).forEach(([k,v])=>{
       if(v){
-        const field = Object.values(settings.registrationFields).flat().find(f=>f.id===k);
+        const field = Object.values(settings.registrationFields || {}).flat().find(f=>f.id===k);
         fieldList.appendChild(el('div',{class:'field-row'},[el('span',{class:'k'},field?field.label:k), el('span',{class:'v'},v)]));
       }
     });
   }
   body.appendChild(fieldList);
 
+  const qrCaption = (settings.idCardConfig && settings.idCardConfig.qrCaption) || 'Scan to check in / check out';
   const qrBlock = el('div',{class:'qr-block'});
   qrBlock.appendChild(el('div',{class:'qr-frame'},[el('div',{id:qrTargetId})]));
-  qrBlock.appendChild(el('div',{class:'qr-caption'}, settings.idCardConfig.qrCaption));
+  qrBlock.appendChild(el('div',{class:'qr-caption'}, qrCaption));
   body.appendChild(qrBlock);
   card.appendChild(body);
 
@@ -1735,7 +1764,8 @@ function renderQrIntoTarget(targetId, payload, expired){
     const target = document.getElementById(targetId);
     if(target && window.QRCode){
       target.innerHTML='';
-      new QRCode(target, { text:payload, width:132, height:132, colorDark: expired?'#9aa5ad':'#0f3057', colorLight:'#ffffff' });
+      const cleanPayload = payload || 'COTEMS|UNKNOWN|TOKEN';
+      new QRCode(target, { text:cleanPayload, width:132, height:132, colorDark: expired?'#9aa5ad':'#0f3057', colorLight:'#ffffff' });
     }
   },0);
 }
@@ -1855,11 +1885,58 @@ function renderMobileApp(){
     const passInput = el('input',{type:'password',placeholder:'Password',style:'width:100%;margin-bottom:14px;'});
     card.appendChild(idInput);
     card.appendChild(passInput);
-    card.appendChild(el('button',{class:'btn coral',style:'width:100%;',onclick:()=>{
-      const person = PEOPLE.find(p=>p.idNumber.toLowerCase()===idInput.value.trim().toLowerCase());
-      if(!person || person.password!==passInput.value){ alert('Incorrect ID number or password.'); return; }
-      ma.loggedInPersonId = person.id; ma.screen='staffProfile'; ma.sirenPlayedForAlertIds=[]; ma.announcedAlertIds=[]; render();
-    }},'Log in'));
+    const loginBtn = el('button',{class:'btn coral',style:'width:100%;',onclick: async ()=>{
+      const idVal = idInput.value.trim();
+      const pwd = passInput.value;
+      if(!idVal || !pwd){ alert('Enter ID number and password.'); return; }
+
+      loginBtn.disabled = true;
+      loginBtn.textContent = '⏳ Authenticating...';
+
+      let person = PEOPLE.find(p=>p.idNumber.toLowerCase()===idVal.toLowerCase());
+      const sb = getSupabase();
+      let authSuccess = false;
+
+      if(sb){
+        try {
+          const cleanId = idVal.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9._-]/g, '').replace(/^[._-]+|[._-]+$/g, '');
+          const email = `${cleanId}@person.cotems.local`;
+          const { data, error } = await sb.auth.signInWithPassword({ email, password: pwd });
+          if(!error && data && data.user){
+            authSuccess = true;
+          }
+        } catch(e){}
+      }
+
+      if(!authSuccess && (!person || person.password !== pwd)){
+        showToast('Incorrect ID number or password.', 'error');
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'Log in';
+        return;
+      }
+
+      if(!person && sb){
+        try {
+          await refreshOperationalData();
+          person = PEOPLE.find(p=>p.idNumber.toLowerCase()===idVal.toLowerCase());
+        } catch(e){}
+      }
+
+      if(!person){
+        showToast('Person profile not found.', 'error');
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'Log in';
+        return;
+      }
+
+      person.password = pwd;
+      ma.loggedInPersonId = person.id;
+      ma.screen = 'staffProfile';
+      ma.sirenPlayedForAlertIds = [];
+      ma.announcedAlertIds = [];
+      render();
+    }},'Log in');
+    card.appendChild(loginBtn);
     wrap.appendChild(card);
     return wrap;
   }
@@ -1867,27 +1944,29 @@ function renderMobileApp(){
   if(ma.screen==='staffProfile'){
     const person = PEOPLE.find(p=>p.id===ma.loggedInPersonId);
     if(!person){ ma.screen='menu'; render(); return wrap; }
-    wrap.appendChild(el('div',{class:'banner ok',style:'text-align:center;'},'Signed in as '+person.name));
+    wrap.appendChild(el('div',{class:'banner ok',style:'text-align:center;'},'Signed in as '+(person.name || 'Occupant')));
 
     const myAlerts = alertsForPerson(person).slice(0,8);
     const unsoundedEmergencyAlerts = myAlerts.filter(a=>
-      a.type==='emergency' && a.sirenEnabled && !ma.sirenPlayedForAlertIds.includes(a.id)
-      && state.emergencies[a.campusId] && state.emergencies[a.campusId].status==='active'
-      && isCheckedInAtCampus(person, a.campusId) // only people currently checked in (campus/building/room) get the siren
+      a.type==='emergency' && a.sirenEnabled && !(ma.sirenPlayedForAlertIds||[]).includes(a.id)
+      && state.emergencies && state.emergencies[a.campusId] && state.emergencies[a.campusId].status==='active'
+      && isCheckedInAtCampus(person, a.campusId)
     );
-    const unannouncedAlerts = myAlerts.filter(a=>!ma.announcedAlertIds.includes(a.id));
+    const unannouncedAlerts = myAlerts.filter(a=>!(ma.announcedAlertIds||[]).includes(a.id));
 
-    const activeEmergencyHere = state.emergencies[person.homeCampus] && state.emergencies[person.homeCampus].status==='active' ? state.emergencies[person.homeCampus] : null;
+    const activeEmergencyHere = (state.emergencies && person.homeCampus && state.emergencies[person.homeCampus] && state.emergencies[person.homeCampus].status==='active') ? state.emergencies[person.homeCampus] : null;
     if(activeEmergencyHere){
       const myMusterPoint = musterPointForPerson(person, person.homeCampus);
+      const cObj = campusById(person.homeCampus);
+      const cName = cObj ? cObj.name : 'Campus';
       wrap.appendChild(el('div',{class:'banner warn',style:'text-align:center;border:2px solid var(--coral);'},[
-        el('div',{style:'font-size:13px;font-weight:800;'},'🚨 '+activeEmergencyHere.type+' — '+campusById(person.homeCampus).name),
+        el('div',{style:'font-size:13px;font-weight:800;'},'🚨 '+activeEmergencyHere.type+' — '+cName),
         el('div',{style:'font-size:16px;font-weight:800;margin:6px 0 2px;'},'📍 Report to: '+(myMusterPoint?myMusterPoint.name:'the nearest muster point')),
         el('div',{class:'muted',style:'font-size:11px;'},'Proceed there now and wait to be accounted for by your warden.'),
       ]));
 
-      const myEntry = activeEmergencyHere.musterSnapshot.find(m=>m.personId===person.id);
-      const mySignal = state.distressSignals.find(s=>s.personId===person.id && s.campusId===person.homeCampus && s.status!=='resolved');
+      const myEntry = (activeEmergencyHere.musterSnapshot || []).find(m=>m.personId===person.id);
+      const mySignal = (state.distressSignals || []).find(s=>s.personId===person.id && s.campusId===person.homeCampus && s.status!=='resolved');
 
       if(mySignal){
         wrap.appendChild(el('div',{class:'banner warn',style:'text-align:center;border:2px solid var(--coral);'},[
