@@ -305,14 +305,24 @@ async function initSupabaseData(){
       const regFields = { staff: [], student: [], visitor: [] };
       fRes.data.forEach(f => {
         if (regFields[f.person_type]) {
-          regFields[f.person_type].push({
+          const list = regFields[f.person_type];
+          const existingIdx = list.findIndex(x => x.id === f.field_id);
+          const item = {
             id: f.field_id,
             label: f.label,
             type: f.type,
             options: f.options,
             required: f.required,
             core: f.core
-          });
+          };
+          if (existingIdx >= 0) {
+            // Keep the version that has options or specialized type over plain text
+            if ((item.options && item.options.length > 0) || (item.type !== 'text' && list[existingIdx].type === 'text')) {
+              list[existingIdx] = item;
+            }
+          } else {
+            list.push(item);
+          }
         }
       });
       settings.registrationFields = regFields;
@@ -2660,9 +2670,41 @@ const REG_COLUMN_META = {
 };
 const KNOWN_PERSON_FIELDS = ['name','idNumber','role','homeCampus','mobile','registeredBy','college','department','designation','employmentType','yearOfEnrolment','purposeOfVisit','hostName','password'];
 
+function getNextSuggestedId(roleKey){
+  if(roleKey === 'visitor'){
+    const visNums = PEOPLE.filter(p=>p.idNumber && p.idNumber.toUpperCase().startsWith('VIS'))
+      .map(p=>parseInt(p.idNumber.replace(/\D/g,''),10)).filter(n=>!isNaN(n));
+    let nextNum = visNums.length > 0 ? Math.max(...visNums) + 1 : 20260001;
+    while(PEOPLE.some(p=>p.idNumber && p.idNumber.toUpperCase() === ('VIS' + nextNum))){
+      nextNum++;
+    }
+    return 'VIS' + nextNum;
+  }
+  const fnuNums = PEOPLE.filter(p=>p.idNumber && p.idNumber.toUpperCase().startsWith('FNU'))
+    .map(p=>parseInt(p.idNumber.replace(/\D/g,''),10)).filter(n=>!isNaN(n));
+  let candidate = fnuNums.length > 0 ? Math.max(...fnuNums) + 1 : 20230100;
+  if (candidate < 20230100) candidate = 20230100;
+  while(PEOPLE.some(p=>p.idNumber && p.idNumber.toUpperCase() === ('FNU' + candidate))){
+    candidate++;
+  }
+  return 'FNU' + candidate;
+}
+
 function renderRegColumn(roleKey, campus){
   const meta = REG_COLUMN_META[roleKey];
-  const fields = settings.registrationFields[roleKey];
+  const rawFields = settings.registrationFields[roleKey] || [];
+  // Ensure no duplicate field IDs are ever rendered
+  const fields = [];
+  rawFields.forEach(f => {
+    const existing = fields.find(x => x.id === f.id);
+    if (!existing) {
+      fields.push(f);
+    } else if ((f.options && f.options.length > 0) || (f.type !== 'text' && existing.type === 'text')) {
+      const idx = fields.indexOf(existing);
+      fields[idx] = f;
+    }
+  });
+
   const col = el('div',{class:'card',style:'border-top:5px solid var('+meta.borderVar+');'});
   col.appendChild(el('h3',{style:'color:'+meta.titleColor+';margin-top:0;'}, meta.icon+' '+meta.title));
   col.appendChild(el('p',{class:'muted',style:'font-size:11.5px;margin-top:-6px;'}, meta.subtitle));
@@ -2673,18 +2715,18 @@ function renderRegColumn(roleKey, campus){
     if(f.type==='campus'){
       inputEl = el('select',{});
       CAMPUSES.forEach(c=>inputEl.appendChild(el('option',{value:c.id, ...(c.id===campus.id?{selected:'selected'}:{})},c.name)));
-    } else if(f.type==='select'){
+    } else if(f.type==='select' || f.type==='dropdown'){
       inputEl = el('select',{});
       (f.options||[]).forEach(o=>inputEl.appendChild(el('option',{value:o},o)));
     } else {
       inputEl = el('input',{type:'text'});
-      if(f.id==='idNumber') inputEl.value = meta.idPrefix+(20230000+personSeq+1);
+      if(f.id==='idNumber') inputEl.value = getNextSuggestedId(roleKey);
     }
     inputs[f.id] = inputEl;
     col.appendChild(regField(f.label+(f.required?'':' (optional)'), inputEl));
   });
 
-  col.appendChild(el('button',{class:'btn '+meta.btnClass,style:'width:100%;',onclick:()=>{
+  const submitBtn = el('button',{class:'btn '+meta.btnClass,style:'width:100%;',onclick: async ()=>{
     for(const f of fields){
       if(f.required){
         const val = inputs[f.id].value;
@@ -2693,7 +2735,7 @@ function renderRegColumn(roleKey, campus){
     }
     const vals = {};
     fields.forEach(f=>{ const v = inputs[f.id].value; vals[f.id] = (typeof v==='string') ? v.trim() : v; });
-    if(!vals.idNumber) vals.idNumber = genId(meta.idPrefix.toLowerCase());
+    if(!vals.idNumber) vals.idNumber = getNextSuggestedId(roleKey);
     if(!vals.homeCampus) vals.homeCampus = campus.id;
 
     const registrar = (state.wardenAuth && state.wardenAuth.loggedIn)
@@ -2703,16 +2745,40 @@ function renderRegColumn(roleKey, campus){
     const existing = PEOPLE.find(p=>p.idNumber.toLowerCase()===vals.idNumber.toLowerCase());
     if(existing){
       if(meta.roleValue==='Visitor' && existing.role==='Visitor' && existing.qrStatus==='expired'){
-        const updated = reissueVisitorPass(existing, vals, registrar);
-        openQrModal(updated);
+        submitBtn.disabled = true;
+        submitBtn.textContent = '⏳ Reissuing pass in Supabase...';
+        try {
+          const updated = await reissueVisitorPass(existing, vals, registrar);
+          if(updated) openQrModal(updated);
+        } finally {
+          submitBtn.disabled = false;
+          submitBtn.textContent = meta.buttonLabel;
+        }
         return;
       }
       alert('That ID number is already registered'+(existing.qrStatus==='active'?' and still active — no need to re-register.':'.'));
       return;
     }
-    const person = registerPerson({ ...vals, role:meta.roleValue, registeredBy: registrar });
-    openQrModal(person);
-  }}, meta.buttonLabel));
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = '⏳ Registering in Supabase...';
+    try {
+      const person = await registerPerson({ ...vals, role:meta.roleValue, registeredBy: registrar });
+      if(person){
+        openQrModal(person);
+        // Refresh suggested ID and clear inputs for next registration
+        fields.forEach(f=>{
+          if(f.id === 'idNumber') inputs[f.id].value = getNextSuggestedId(roleKey);
+          else if(f.type === 'text') inputs[f.id].value = '';
+        });
+      }
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = meta.buttonLabel;
+    }
+  }}, meta.buttonLabel);
+
+  col.appendChild(submitBtn);
   return col;
 }
 
@@ -2805,6 +2871,7 @@ async function registerPerson(vals){
     } catch(err){
       console.error("register-person Edge Function failed:", err);
       showToast("Registration error: " + err.message, "error");
+      return null;
     }
   }
 
