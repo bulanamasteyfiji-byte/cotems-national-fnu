@@ -387,11 +387,15 @@ async function initSupabaseData(){
     // Setup Realtime Subscriptions
     setupRealtimeSubscriptions();
 
+    restoreTabSession();
+    startLiveSyncPoller();
+
     dbState.isLoaded = true;
     render();
   } catch (err) {
     console.error("Failed to load Supabase data:", err);
     showToast("Error loading data from Supabase backend", "error");
+    restoreTabSession();
     render(); // always render — app works offline with in-memory demo data
   }
 }
@@ -551,55 +555,301 @@ async function refreshOperationalData(){
 function setupRealtimeSubscriptions(){
   const sb = getSupabase();
   if(!sb) return;
-  const channel = sb.channel('cotems-realtime')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'checkins' }, () => { refreshOperationalData().then(render); })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'emergencies' }, () => { refreshOperationalData().then(render); })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'muster_roll' }, () => { refreshOperationalData().then(render); })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'alerts' }, () => { refreshOperationalData().then(render); })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'distress_signals' }, () => { refreshOperationalData().then(render); })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'wardens' }, async () => {
-      try {
-        const { data, error } = await sb.from('wardens').select('*');
-        if (!error && data) {
-          syncWardensFromData(data);
-          render();
-        }
-      } catch(e) { console.warn("Realtime wardens sync error:", e); }
-    })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'sirens' }, async () => {
-      try {
-        const { data } = await sb.from('sirens').select('*');
-        if (data && data.length > 0) {
-          settings.sirens = data.map(s => ({
-            id: s.id,
-            name: s.name,
-            mode: s.mode || (s.id === 'default' ? 'synth' : 'audio'),
-            audioData: s.audio_storage_path
-          }));
-          if (!settings.sirens.some(s => s.id === 'default')) {
-            settings.sirens.unshift({ id:'default', name:'Default Siren (synthesized wail)', mode:'synth', audioData:null });
+  try {
+    const channel = sb.channel('cotems-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'checkins' }, () => { refreshOperationalData().then(render); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'emergencies' }, () => { refreshOperationalData().then(render); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'muster_roll' }, () => { refreshOperationalData().then(render); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'alerts' }, () => { refreshOperationalData().then(render); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'distress_signals' }, () => { refreshOperationalData().then(render); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'people' }, () => { refreshOperationalData().then(render); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wardens' }, async () => {
+        try {
+          const { data, error } = await sb.from('wardens').select('*');
+          if (!error && data) {
+            syncWardensFromData(data);
+            render();
           }
-          render();
+        } catch(e) { console.warn("Realtime wardens sync error:", e); }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sirens' }, async () => {
+        try {
+          const { data } = await sb.from('sirens').select('*');
+          if (data && data.length > 0) {
+            settings.sirens = data.map(s => ({
+              id: s.id,
+              name: s.name,
+              mode: s.mode || (s.id === 'default' ? 'synth' : 'audio'),
+              audioData: s.audio_storage_path
+            }));
+            if (!settings.sirens.some(s => s.id === 'default')) {
+              settings.sirens.unshift({ id:'default', name:'Default Siren (synthesized wail)', mode:'synth', audioData:null });
+            }
+            render();
+          }
+        } catch(e) { console.warn("Realtime sirens sync error:", e); }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, async () => {
+        try {
+          const { data } = await sb.from('settings').select('*').single();
+          if (data) {
+            if (data.org_name) settings.orgName = data.org_name;
+            if (data.occ_warn_pct !== undefined) settings.occWarnPct = data.occ_warn_pct;
+            if (data.occ_crit_pct !== undefined) settings.occCritPct = data.occ_crit_pct;
+            if (data.emergency_types) settings.emergencyTypes = data.emergency_types;
+            if (data.siren_id_for_type) settings.sirenIdForType = data.siren_id_for_type;
+            if (data.notifications) Object.assign(settings.notifications, data.notifications);
+            if (data.dashboard_config) settings.dashboardConfig = data.dashboard_config;
+            render();
+          }
+        } catch(e) { console.warn("Realtime settings sync error:", e); }
+      })
+      .subscribe((status, err) => {
+        if(err) console.warn("Realtime subscription status:", status, err);
+      });
+    realtimeChannels.push(channel);
+  } catch(e){
+    console.warn("Failed to setup realtime subscriptions:", e);
+  }
+}
+
+/* ============================= TAB SESSION PERSISTENCE ============================= */
+function persistTabSession(){
+  try {
+    const sessionData = {
+      screen: state.screen,
+      currentCampusId: state.currentCampusId,
+      wardenTab: state.wardenTab,
+      adminSubTab: state.adminSubTab,
+      wardenAuth: {
+        loggedIn: !!(state.wardenAuth && state.wardenAuth.loggedIn),
+        step: state.wardenAuth ? state.wardenAuth.step : 'login',
+        wardenId: state.wardenAuth ? state.wardenAuth.wardenId : null,
+        username: state.wardenAuth ? state.wardenAuth.username : null,
+        name: state.wardenAuth ? state.wardenAuth.name : null,
+        role: state.wardenAuth ? state.wardenAuth.role : null,
+        assignedCampusId: state.wardenAuth ? state.wardenAuth.assignedCampusId : null
+      },
+      sysAdmin: {
+        loggedIn: !!(state.sysAdmin && state.sysAdmin.loggedIn),
+        step: state.sysAdmin ? state.sysAdmin.step : 'login',
+        campusId: state.sysAdmin ? state.sysAdmin.campusId : null,
+        loggedInAdminId: state.sysAdmin ? state.sysAdmin.loggedInAdminId : null
+      },
+      mobileApp: {
+        screen: state.mobileApp ? state.mobileApp.screen : 'menu',
+        loggedInPersonId: state.mobileApp ? state.mobileApp.loggedInPersonId : null,
+        loggedInScannerId: state.mobileApp ? state.mobileApp.loggedInScannerId : null
+      }
+    };
+    sessionStorage.setItem('cotems_tab_session', JSON.stringify(sessionData));
+  } catch(e){}
+}
+
+function restoreTabSession(){
+  try {
+    const saved = sessionStorage.getItem('cotems_tab_session');
+    if(!saved) return false;
+    const data = JSON.parse(saved);
+    if(data && data.screen){
+      state.screen = data.screen;
+      if(data.currentCampusId) state.currentCampusId = data.currentCampusId;
+      if(data.wardenTab) state.wardenTab = data.wardenTab;
+      if(data.adminSubTab) state.adminSubTab = data.adminSubTab;
+      if(data.wardenAuth){
+        Object.assign(state.wardenAuth, data.wardenAuth);
+      }
+      if(data.sysAdmin){
+        Object.assign(state.sysAdmin, data.sysAdmin);
+      }
+      if(data.mobileApp){
+        state.mobileApp.screen = data.mobileApp.screen || 'menu';
+        state.mobileApp.loggedInPersonId = data.mobileApp.loggedInPersonId || null;
+        state.mobileApp.loggedInScannerId = data.mobileApp.loggedInScannerId || null;
+      }
+      return true;
+    }
+  } catch(e){}
+  return false;
+}
+
+function clearTabSession(){
+  try {
+    sessionStorage.removeItem('cotems_tab_session');
+  } catch(e){}
+}
+
+/* ============================= REAL-TIME CROSS-TAB SYNC ============================= */
+const cotemsSyncChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('cotems_live_sync') : null;
+
+function broadcastLiveSync(action, payload){
+  const msg = { action, payload, senderId: Math.random().toString(36).slice(2), timestamp: Date.now() };
+  if(cotemsSyncChannel){
+    try { cotemsSyncChannel.postMessage(msg); } catch(e){}
+  }
+  try {
+    localStorage.setItem('cotems_sync_signal', JSON.stringify(msg));
+  } catch(e){}
+}
+
+async function handleLiveSyncEvent(msg){
+  if(!msg || !msg.action) return;
+  const { action, payload } = msg;
+
+  if(action === 'checkin' || action === 'checkout'){
+    if(payload && payload.personId){
+      if(action === 'checkin'){
+        state.checkins[payload.personId] = {
+          campusId: payload.campusId,
+          buildingId: payload.buildingId || null,
+          roomId: payload.roomId || null,
+          inTime: new Date(payload.inTime || Date.now()),
+          outTime: null
+        };
+        const p = PEOPLE.find(x => x.id === payload.personId);
+        const pName = p ? p.name : 'Occupant';
+        const loc = roomLabel(payload.campusId, payload.buildingId, payload.roomId);
+        
+        // If this tab is the logged in occupant, show notification and play sound
+        if(state.mobileApp && state.mobileApp.loggedInPersonId === payload.personId){
+          playNotificationChime();
+          showToast(`📍 Check-in confirmed: ${loc}`, 'ok');
+        } else if(state.screen === 'warden' && state.wardenAuth.loggedIn && (state.currentCampusId === payload.campusId || state.currentCampusId === 'all')){
+          showToast(`👤 ${pName} checked in at ${loc}`, 'ok');
         }
-      } catch(e) { console.warn("Realtime sirens sync error:", e); }
-    })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, async () => {
+      } else {
+        if(state.checkins[payload.personId]){
+          state.checkins[payload.personId].outTime = new Date();
+        }
+        const p = PEOPLE.find(x => x.id === payload.personId);
+        const pName = p ? p.name : 'Occupant';
+        if(state.mobileApp && state.mobileApp.loggedInPersonId === payload.personId){
+          playNotificationChime();
+          showToast(`ℹ️ Check-out confirmed from campus`, 'info');
+        } else if(state.screen === 'warden' && state.wardenAuth.loggedIn){
+          showToast(`👤 ${pName} checked out`, 'info');
+        }
+      }
+    }
+    if(getSupabase()){
+      try { await refreshOperationalData(); } catch(e){}
+    }
+    render();
+  } else if(action === 'emergency_declared'){
+    if(getSupabase()){
+      try { await refreshOperationalData(); } catch(e){}
+    }
+    playNotificationChime();
+    showToast(`🚨 Emergency declared: ${payload.type}!`, 'error');
+    render();
+  } else if(action === 'emergency_cleared'){
+    if(payload && payload.campusId){
+      if(state.emergencies[payload.campusId]){
+        state.emergencies[payload.campusId].status = 'cleared';
+      }
+      if(sirenPlaying && sirenCampusId === payload.campusId){
+        stopSiren();
+      }
+    }
+    if(getSupabase()){
+      try { await refreshOperationalData(); } catch(e){}
+    }
+    showToast(`✅ Emergency cleared: ALL-CLEAR`, 'ok');
+    render();
+  } else if(action === 'safe_declared'){
+    if(payload && payload.campusId && state.emergencies[payload.campusId]){
+      const em = state.emergencies[payload.campusId];
+      let entry = (em.musterSnapshot || []).find(m => m.personId === payload.personId);
+      if(!entry){
+        entry = { personId: payload.personId, buildingId: null, roomId: null, status: 'accounted', accountedAt: new Date() };
+        em.musterSnapshot = em.musterSnapshot || [];
+        em.musterSnapshot.push(entry);
+      }
+      entry.status = 'accounted';
+      entry.accountedAt = new Date();
+      entry.accountedBy = payload.accountedBy || 'self';
+      entry.selfDeclarationType = payload.declarationType;
+      entry.selfDeclarationNote = payload.locationNote || '';
+      
+      const p = PEOPLE.find(x => x.id === payload.personId);
+      const pName = p ? p.name : (payload.personName || 'Occupant');
+      if(state.screen === 'warden' && state.wardenAuth.loggedIn){
+        playNotificationChime();
+        showToast(`✅ ${pName} self-declared SAFE!`, 'ok');
+      }
+    }
+    if(getSupabase()){
+      try { await refreshOperationalData(); } catch(e){}
+    }
+    render();
+  } else if(action === 'distress_signal'){
+    if(payload && payload.signal){
+      const exists = state.distressSignals.some(s => s.id === payload.signal.id);
+      if(!exists) state.distressSignals.unshift(payload.signal);
+      
+      if(payload.signal.campusId && state.emergencies[payload.signal.campusId]){
+        const em = state.emergencies[payload.signal.campusId];
+        let entry = (em.musterSnapshot || []).find(m => m.personId === payload.signal.personId);
+        if(!entry){
+          entry = { personId: payload.signal.personId, buildingId: payload.signal.buildingId, roomId: payload.signal.roomId, status: 'trapped', accountedAt: null };
+          em.musterSnapshot = em.musterSnapshot || [];
+          em.musterSnapshot.push(entry);
+        } else {
+          entry.status = 'trapped';
+        }
+      }
+      const p = PEOPLE.find(x => x.id === payload.signal.personId);
+      const pName = p ? p.name : (payload.personName || 'Occupant');
+      if(state.screen === 'warden' && state.wardenAuth.loggedIn){
+        playNotificationChime();
+        showToast(`🚨 DISTRESS SIGNAL: ${pName} needs help!`, 'error');
+      }
+    }
+    if(getSupabase()){
+      try { await refreshOperationalData(); } catch(e){}
+    }
+    render();
+  } else if(action === 'alert_sent'){
+    if(payload && payload.alert){
+      const exists = state.alerts.some(a => a.id === payload.alert.id);
+      if(!exists) state.alerts.unshift(payload.alert);
+    }
+    if(getSupabase()){
+      try { await refreshOperationalData(); } catch(e){}
+    }
+    render();
+  } else {
+    if(getSupabase()){
+      try { await refreshOperationalData(); } catch(e){}
+    }
+    render();
+  }
+}
+
+if(cotemsSyncChannel){
+  cotemsSyncChannel.onmessage = (e) => {
+    handleLiveSyncEvent(e.data);
+  };
+}
+window.addEventListener('storage', (e) => {
+  if(e.key === 'cotems_sync_signal' && e.newValue){
+    try {
+      handleLiveSyncEvent(JSON.parse(e.newValue));
+    } catch(err){}
+  }
+});
+
+let liveSyncPoller = null;
+function startLiveSyncPoller(){
+  if(liveSyncPoller) clearInterval(liveSyncPoller);
+  liveSyncPoller = setInterval(async () => {
+    if(getSupabase() && !document.hidden){
       try {
-        const { data } = await sb.from('settings').select('*').single();
-        if (data) {
-          if (data.org_name) settings.orgName = data.org_name;
-          if (data.occ_warn_pct !== undefined) settings.occWarnPct = data.occ_warn_pct;
-          if (data.occ_crit_pct !== undefined) settings.occCritPct = data.occ_crit_pct;
-          if (data.emergency_types) settings.emergencyTypes = data.emergency_types;
-          if (data.siren_id_for_type) settings.sirenIdForType = data.siren_id_for_type;
-          if (data.notifications) Object.assign(settings.notifications, data.notifications);
-          if (data.dashboard_config) settings.dashboardConfig = data.dashboard_config;
-          render();
-        }
-      } catch(e) { console.warn("Realtime settings sync error:", e); }
-    })
-    .subscribe();
-  realtimeChannels.push(channel);
+        await refreshOperationalData();
+        render();
+      } catch(e){}
+    }
+  }, 3500);
 }
 
 document.addEventListener('DOMContentLoaded', () => { initSupabaseData(); });
@@ -1393,6 +1643,7 @@ function occBarClass(pct){ return pct>settings.occCritPct?'crit':pct>settings.oc
 
 const $app = document.getElementById('app');
 function render(){
+  persistTabSession();
   $app.innerHTML = '';
   $app.appendChild(topbar());
   const main = document.createElement('main');
@@ -1946,6 +2197,22 @@ function renderMobileApp(){
     if(!person){ ma.screen='menu'; render(); return wrap; }
     wrap.appendChild(el('div',{class:'banner ok',style:'text-align:center;'},'Signed in as '+(person.name || 'Occupant')));
 
+    const myCheckin = state.checkins[person.id];
+    const isNowCheckedIn = myCheckin && !myCheckin.outTime;
+    if(isNowCheckedIn){
+      const loc = roomLabel(myCheckin.campusId, myCheckin.buildingId, myCheckin.roomId);
+      wrap.appendChild(el('div',{class:'banner ok',style:'text-align:center;margin:8px 0 12px;border:1.5px solid var(--teal);'},[
+        el('div',{style:'font-weight:800;font-size:13px;color:var(--teal-dk);letter-spacing:.03em;'},'📍 CURRENTLY CHECKED IN'),
+        el('div',{style:'font-size:14.5px;font-weight:700;margin:4px 0 2px;color:var(--navy);'}, loc),
+        el('div',{class:'muted',style:'font-size:11px;'},'Checked in at '+fmtTime(myCheckin.inTime)+' · '+fmtDate(myCheckin.inTime)),
+      ]));
+    } else {
+      wrap.appendChild(el('div',{class:'banner info',style:'text-align:center;margin:8px 0 12px;'},[
+        el('div',{style:'font-weight:700;font-size:12.5px;color:var(--navy);'},'⚪ NOT CHECKED IN ON CAMPUS'),
+        el('div',{class:'muted',style:'font-size:11px;margin-top:2px;'},'Scan your digital ID barcode at any kiosk or room scanner to check in.'),
+      ]));
+    }
+
     const myAlerts = alertsForPerson(person).slice(0,8);
     const unsoundedEmergencyAlerts = myAlerts.filter(a=>
       a.type==='emergency' && a.sirenEnabled && !(ma.sirenPlayedForAlertIds||[]).includes(a.id)
@@ -1954,10 +2221,15 @@ function renderMobileApp(){
     );
     const unannouncedAlerts = myAlerts.filter(a=>!(ma.announcedAlertIds||[]).includes(a.id));
 
-    const activeEmergencyHere = (state.emergencies && person.homeCampus && state.emergencies[person.homeCampus] && state.emergencies[person.homeCampus].status==='active') ? state.emergencies[person.homeCampus] : null;
+    const activeCampusId = (isNowCheckedIn && myCheckin.campusId) ? myCheckin.campusId : person.homeCampus;
+    const activeEmergencyHere = (state.emergencies && (
+      (person.homeCampus && state.emergencies[person.homeCampus] && state.emergencies[person.homeCampus].status==='active') ||
+      (isNowCheckedIn && state.emergencies[myCheckin.campusId] && state.emergencies[myCheckin.campusId].status==='active')
+    )) ? (state.emergencies[activeCampusId]?.status==='active' ? state.emergencies[activeCampusId] : state.emergencies[person.homeCampus]) : null;
+
     if(activeEmergencyHere){
-      const myMusterPoint = musterPointForPerson(person, person.homeCampus);
-      const cObj = campusById(person.homeCampus);
+      const myMusterPoint = musterPointForPerson(person, activeCampusId);
+      const cObj = campusById(activeCampusId);
       const cName = cObj ? cObj.name : 'Campus';
       wrap.appendChild(el('div',{class:'banner warn',style:'text-align:center;border:2px solid var(--coral);'},[
         el('div',{style:'font-size:13px;font-weight:800;'},'🚨 '+activeEmergencyHere.type+' — '+cName),
@@ -1966,7 +2238,7 @@ function renderMobileApp(){
       ]));
 
       const myEntry = (activeEmergencyHere.musterSnapshot || []).find(m=>m.personId===person.id);
-      const mySignal = (state.distressSignals || []).find(s=>s.personId===person.id && s.campusId===person.homeCampus && s.status!=='resolved');
+      const mySignal = (state.distressSignals || []).find(s=>s.personId===person.id && s.campusId===activeCampusId && s.status!=='resolved');
 
       if(mySignal){
         wrap.appendChild(el('div',{class:'banner warn',style:'text-align:center;border:2px solid var(--coral);'},[
@@ -1984,12 +2256,12 @@ function renderMobileApp(){
         const safetyCard = el('div',{class:'card',style:'margin-bottom:12px;'});
         safetyCard.appendChild(el('div',{style:'font-weight:700;color:var(--navy);margin-bottom:8px;text-align:center;'},'Left without checking out? Confirm your safety:'));
         safetyCard.appendChild(el('div',{style:'display:flex;flex-direction:column;gap:8px;'},[
-          el('button',{class:'btn teal sm',onclick:()=>{ declareSafe(person.id, person.homeCampus, 'on-campus'); render(); }},'✅ I\'m safe — still on campus'),
-          el('button',{class:'btn teal sm',onclick:()=>{ declareSafe(person.id, person.homeCampus, 'off-campus'); render(); }},'✅ I\'m safe — outside campus'),
-          el('button',{class:'btn teal sm',onclick:()=>{ state.modal={type:'declareSafeOther', personId:person.id, campusId:person.homeCampus}; render(); }},'✅ I\'m safe — at another mustering area'),
+          el('button',{class:'btn teal sm',onclick:()=>{ declareSafe(person.id, activeCampusId, 'on-campus'); render(); }},'✅ I\'m safe — still on campus'),
+          el('button',{class:'btn teal sm',onclick:()=>{ declareSafe(person.id, activeCampusId, 'off-campus'); render(); }},'✅ I\'m safe — outside campus'),
+          el('button',{class:'btn teal sm',onclick:()=>{ state.modal={type:'declareSafeOther', personId:person.id, campusId:activeCampusId}; render(); }},'✅ I\'m safe — at another mustering area'),
         ]));
         safetyCard.appendChild(el('div',{style:'border-top:1px dashed var(--line);margin:14px 0 10px;'}));
-        safetyCard.appendChild(el('button',{class:'btn coral',style:'width:100%;',onclick:()=>{ state.modal={type:'distressSignal', personId:person.id, campusId:person.homeCampus}; render(); }},'🆘 I\'m trapped / need help'));
+        safetyCard.appendChild(el('button',{class:'btn coral',style:'width:100%;',onclick:()=>{ state.modal={type:'distressSignal', personId:person.id, campusId:activeCampusId}; render(); }},'🆘 I\'m trapped / need help'));
         wrap.appendChild(safetyCard);
       }
     }
@@ -2023,7 +2295,7 @@ function renderMobileApp(){
     wrap.appendChild(card);
     wrap.appendChild(el('p',{class:'muted',style:'text-align:center;font-size:11.5px;margin-top:10px;'},'Present this screen to a room, building, or campus scanner to check in or out.'));
     wrap.appendChild(el('div',{style:'text-align:center;margin-top:14px;'},[
-      el('button',{class:'btn sm outline',onclick:()=>{ stopSiren(); ma.loggedInPersonId=null; ma.screen='menu'; render(); }},'Log out'),
+      el('button',{class:'btn sm outline',onclick:()=>{ stopSiren(); ma.loggedInPersonId=null; ma.screen='menu'; clearTabSession(); render(); }},'Log out'),
     ]));
     renderQrIntoTarget('staffProfileQrTarget', person.qrPayload, person.qrStatus==='expired');
 
@@ -2131,7 +2403,7 @@ function renderMobileApp(){
 
     wrap.appendChild(card);
     wrap.appendChild(el('div',{style:'text-align:center;margin-top:16px;'},[
-      el('button',{class:'btn outline sm',onclick:()=>{ stopScanner(); ma.loggedInScannerId=null; ma.lastResult=null; ma.screen='menu'; render(); }},'🔓 Log out scanner'),
+      el('button',{class:'btn outline sm',onclick:()=>{ stopScanner(); ma.loggedInScannerId=null; ma.lastResult=null; ma.screen='menu'; clearTabSession(); render(); }},'🔓 Log out scanner'),
     ]));
 
     if(!scanStream){ startMobileScanner(statusMsg); }
@@ -2247,19 +2519,29 @@ async function doCheckIn(personId, campusId, buildingId, roomId){
   }
   state.checkins[personId] = { campusId, buildingId:buildingId||null, roomId:roomId||null, inTime:new Date(), outTime:null };
   logCheckEvent('in', personId, campusId, buildingId, roomId);
-  log(campusId, personId, 'Checked in — '+roomLabel(campusId,buildingId,roomId));
+  const loc = roomLabel(campusId,buildingId,roomId);
+  log(campusId, personId, 'Checked in — '+loc);
+
+  const person = PEOPLE.find(p=>p.id===personId);
+  if(person){
+    sendAlert(campusId, person.role, `✅ Check-in confirmed: You checked in at ${loc} (${fmtTime(new Date())})`, 'COTEMS Access Control', 'broadcast', false, null, 'checkin');
+  }
+
+  broadcastLiveSync('checkin', { personId, campusId, buildingId, roomId, inTime: new Date().toISOString() });
 
   if(supabase){
-    // Close existing checkin
-    await getSupabase().from('checkins').update({ out_time: new Date().toISOString() }).eq('person_id', personId).is('out_time', null);
-    // Insert new open checkin
-    await getSupabase().from('checkins').insert({
-      person_id: personId,
-      campus_id: campusId,
-      building_id: buildingId || null,
-      room_id: roomId || null,
-      in_time: new Date().toISOString()
-    });
+    try {
+      // Close existing checkin
+      await getSupabase().from('checkins').update({ out_time: new Date().toISOString() }).eq('person_id', personId).is('out_time', null);
+      // Insert new open checkin
+      await getSupabase().from('checkins').insert({
+        person_id: personId,
+        campus_id: campusId,
+        building_id: buildingId || null,
+        room_id: roomId || null,
+        in_time: new Date().toISOString()
+      });
+    } catch(e){ console.warn("Supabase checkin error:", e); }
   }
 }
 async function doCheckOut(personId){
@@ -2267,17 +2549,28 @@ async function doCheckOut(personId){
   if(!c || c.outTime) return false;
   c.outTime = new Date();
   logCheckEvent('out', personId, c.campusId, c.buildingId, c.roomId);
-  log(c.campusId, personId, 'Checked out — '+roomLabel(c.campusId,c.buildingId,c.roomId));
-  
-  if(supabase){
-    await getSupabase().from('checkins').update({ out_time: new Date().toISOString() }).eq('person_id', personId).is('out_time', null);
-  }
+  const loc = roomLabel(c.campusId,c.buildingId,c.roomId);
+  log(c.campusId, personId, 'Checked out — '+loc);
 
   const person = PEOPLE.find(p=>p.id===personId);
+  if(person){
+    sendAlert(c.campusId, person.role, `ℹ️ Check-out confirmed: You checked out from ${loc} (${fmtTime(new Date())})`, 'COTEMS Access Control', 'broadcast', false, null, 'checkout');
+  }
+
+  broadcastLiveSync('checkout', { personId, campusId: c.campusId });
+
+  if(supabase){
+    try {
+      await getSupabase().from('checkins').update({ out_time: new Date().toISOString() }).eq('person_id', personId).is('out_time', null);
+    } catch(e){ console.warn("Supabase checkout error:", e); }
+  }
+
   if(person && person.role==='Visitor' && person.qrStatus!=='expired'){
     person.qrStatus = 'expired';
     if(supabase){
-      await getSupabase().from('people').update({ qr_status: 'expired' }).eq('id', personId);
+      try {
+        await getSupabase().from('people').update({ qr_status: 'expired' }).eq('id', personId);
+      } catch(e){}
     }
     log(c.campusId, personId, 'Visitor pass EXPIRED on check-out — no longer valid for re-entry');
   }
@@ -2661,7 +2954,21 @@ function renderWardenDashboardTab(campus, emergency){
         el('td',{},el('span',{class:'pill '+statusPill+(m.status==='trapped'?' ':'')}, statusLabel)),
         el('td',{}, m.status==='accounted'
           ? el('span',{class:'muted',style:'font-size:11.5px;'},'at '+fmtTime(m.accountedAt))
-          : el('button',{class:'btn sm teal',onclick:()=>{ m.status='accounted'; m.accountedAt=new Date(); m.accountedBy='warden'; log(campus.id,'Warden','Marked '+p.name+' accounted for'); render(); }},'Mark accounted')
+          : el('button',{class:'btn sm teal',onclick:()=>{
+              m.status='accounted'; m.accountedAt=new Date(); m.accountedBy='warden';
+              log(campus.id,'Warden','Marked '+p.name+' accounted for');
+              if(supabase && emergency.id){
+                getSupabase().from('muster_roll').upsert({
+                  emergency_id: emergency.id,
+                  person_id: p.id,
+                  status: 'accounted',
+                  accounted_at: m.accountedAt.toISOString(),
+                  accounted_by: 'warden'
+                }, { onConflict: 'emergency_id, person_id' });
+              }
+              broadcastLiveSync('safe_declared', { personId: p.id, campusId: campus.id, declarationType: 'warden', personName: p.name });
+              render();
+            }},'Mark accounted')
         ),
       ]);
       table.appendChild(row);
@@ -4167,14 +4474,22 @@ async function sendAlert(campusId, audience, message, sentBy, type, sirenEnabled
   }
 
   log(campusId, sentBy, (type==='emergency'?'Emergency alert':'Broadcast alert')+' sent to '+audience+(sirenEnabled?' with siren':'')+': "'+message+'"');
+  broadcastLiveSync('alert_sent', { alert: alertObj });
   return alertObj;
 }
 
 function alertsForPerson(person){
   const retentionMs = (settings.notifications.alertRetentionHours||24) * 3600 * 1000;
   const now = Date.now();
+  const currentCheckin = state.checkins[person.id];
+  const checkedInCampusId = (currentCheckin && !currentCheckin.outTime) ? currentCheckin.campusId : null;
+
   return state.alerts
-    .filter(a=> a.campusId===person.homeCampus && (a.audience==='All' || a.audience===person.role))
+    .filter(a=> {
+      const isAudienceMatch = a.audience==='All' || a.audience===person.role || a.audience===person.id || a.audience===person.idNumber;
+      const isCampusMatch = a.campusId==='all' || a.campusId===person.homeCampus || (checkedInCampusId && a.campusId===checkedInCampusId);
+      return isAudienceMatch && isCampusMatch;
+    })
     .filter(a=> !(a.dismissedByPersonIds||[]).includes(person.id))
     .filter(a=>{
       if(a.kind==='emergency-declare'){
@@ -4242,6 +4557,7 @@ async function confirmDeclareEmergency(campusIds, type, sirenEnabled, sirenId){
     log(campusId,'Warden','DECLARED EMERGENCY: '+type+' ('+snapshot.length+' persons on campus)'+(campusIds.length>1?' — multi-campus declaration ('+campusIds.length+' campuses)':''));
     sendAlert(campusId, 'All', '🚨 EMERGENCY — '+type+' declared at '+campusById(campusId).name+'. Proceed immediately to your nearest muster point and follow warden instructions.', 'System (Emergency Declaration)', 'emergency', sirenEnabled, sirenId, 'emergency-declare', declaredAt);
   }
+  broadcastLiveSync('emergency_declared', { campusIds, type, sirenEnabled, sirenId });
   state.modal = null;
   render();
 }
@@ -4260,6 +4576,7 @@ async function clearEmergency(campusId){
   if(sirenPlaying && sirenCampusId===campusId){
     stopSiren();
   }
+  broadcastLiveSync('emergency_cleared', { campusId, type: e.type });
   render();
 }
 
@@ -4298,7 +4615,8 @@ async function declareSafe(personId, campusId, declarationType, locationNote){
 
   const p = PEOPLE.find(x=>x.id===personId);
   const typeLabel = declarationType==='on-campus' ? 'safe, still on campus' : declarationType==='off-campus' ? 'safe, outside campus' : 'safe at another mustering area'+(locationNote?' ('+locationNote+')':'');
-  log(campusId, personId, p.name+' self-declared '+typeLabel+' during the '+em.type);
+  log(campusId, personId, (p?p.name:personId)+' self-declared '+typeLabel+' during the '+em.type);
+  broadcastLiveSync('safe_declared', { personId, campusId, declarationType, locationNote, personName: p ? p.name : '' });
   return true;
 }
 
@@ -4325,6 +4643,9 @@ async function sendDistressSignal(personId, campusId, buildingId, roomId, messag
     });
   }
 
+  const p = PEOPLE.find(x=>x.id===personId);
+  broadcastLiveSync('distress_signal', { signal, personName: p ? p.name : '' });
+
   const em = state.emergencies[campusId];
   if(em){
     let entry = em.musterSnapshot.find(m=>m.personId===personId);
@@ -4350,8 +4671,7 @@ async function sendDistressSignal(personId, campusId, buildingId, roomId, messag
     }
   }
 
-  const p = PEOPLE.find(x=>x.id===personId);
-  log(campusId,'Warden','🆘 DISTRESS SIGNAL from '+p.name+' ('+p.idNumber+') at '+roomLabel(campusId,buildingId,roomId)+': "'+message+'"');
+  log(campusId,'Warden','🆘 DISTRESS SIGNAL from '+(p?p.name:'Occupant')+' ('+(p?p.idNumber:'')+') at '+roomLabel(campusId,buildingId,roomId)+': "'+message+'"');
   return signal;
 }
 
